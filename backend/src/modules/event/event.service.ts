@@ -2,12 +2,12 @@ import {
   createEvent,
   findByEventKey,
   updateEvent,
-  formatDate,
+  formatDateIndia
 } from "./event.repository";
 import type { CreateEventInput } from "./event.types";
 
 export const createEventService = async (data: CreateEventInput) => {
-  const formattedDate = formatDate(new Date(data.date));
+  const formattedDate = formatDateIndia(new Date(data.date));
 
   const eventKey = `${data.company}|${data.stage}|${formattedDate}`;
   // later: validation, matching, etc.
@@ -15,7 +15,7 @@ export const createEventService = async (data: CreateEventInput) => {
 };
 
 export const upsertEventService = async (data: CreateEventInput) => {
-  const formattedDate = formatDate(new Date(data.date));
+  const formattedDate = formatDateIndia(new Date(data.date));
 
   const eventKey = `${data.company}|${data.stage}|${formattedDate}`;
 

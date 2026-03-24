@@ -28,3 +28,12 @@ export const updateEvent = async (id: number, data: any) => {
 export const formatDate = (date: Date) => {
   return date.toISOString().split("T")[0]; // YYYY-MM-DD
 };
+
+export const formatDateIndia = (date: Date) => {
+  return new Intl.DateTimeFormat('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Asia/Kolkata' // Forces Indian Standard Time
+  }).format(date);
+};
