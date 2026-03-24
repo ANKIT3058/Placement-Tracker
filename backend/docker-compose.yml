@@ -1,0 +1,18 @@
+version: "4.65"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: placement-db
+    restart: always
+    environment:
+      POSTGRES_USER: placement_admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: placement
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
