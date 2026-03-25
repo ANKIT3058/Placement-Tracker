@@ -13,10 +13,24 @@ datasource db {
 }
 
 model Event {
-  id        Int      @id @default(autoincrement())
+  id        Int           @id @default(autoincrement())
   company   String
   stage     String
   date      DateTime
-  eventKey  String   @unique
-  createdAt DateTime @default(now())
+  time      String?
+  venue     String?
+  eventKey  String        @unique
+  createdAt DateTime      @default(now())
+  updates   EventUpdate[]
+}
+
+model EventUpdate {
+  id        Int      @id @default(autoincrement())
+  eventId   Int
+  field     String
+  oldValue  String
+  newValue  String
+  updatedAt DateTime @default(now())
+
+  event Event @relation(fields: [eventId], references: [id])
 }

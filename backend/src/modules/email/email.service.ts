@@ -1,9 +1,9 @@
 import type { EmailInput } from "./email.types";
 import { cleanEmail, extractData } from "./email.parser";
-import { createEventService, upsertEventService } from "../event/event.service";
+import { upsertEventService } from "../event/event.service";
 
 export const processEmail = async (email: EmailInput) => {
-  const cleanText = cleanEmail(email.body);
+  const cleanText = cleanEmail(email.body).toLowerCase();
 
   const extracted = extractData(cleanText);
 
@@ -15,5 +15,7 @@ export const processEmail = async (email: EmailInput) => {
     company: extracted.company,
     stage: extracted.stage,
     date: extracted.date.toISOString(),
+    time: extracted.time ?? null,
+    venue: extracted.venue ?? null,
   });
 };

@@ -7,7 +7,9 @@ export const createEvent = async (data: CreateEventInput, eventKey: string) => {
       company: data.company,
       stage: data.stage,
       date: new Date(data.date),
-      eventKey, // ✅ use passed value
+      time: data.time ?? null,
+      venue: data.venue ?? null,
+      eventKey, // use passed value
     },
   });
 };
@@ -30,10 +32,36 @@ export const formatDate = (date: Date) => {
 };
 
 export const formatDateIndia = (date: Date) => {
-  return new Intl.DateTimeFormat('en-IN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    timeZone: 'Asia/Kolkata' // Forces Indian Standard Time
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    timeZone: "Asia/Kolkata", // Forces Indian Standard Time
   }).format(date);
+};
+
+export const findSimilarEvent = async (
+  company: string,
+  stage: string,
+  date: Date,
+) => {
+  const start = new Date(date);
+  start.setDate(start.getDate() - 1);
+
+  const end = new Date(date);
+  end.setDate(end.getDate() + 1);
+
+  return prisma.event.findFirst({
+    where: {
+      company: {
+        equals: company,
+        mode: "insensitive",
+      },
+      stage,
+      date: {
+        gte: start,
+        lte: end,
+      },
+    },
+  });
 };
