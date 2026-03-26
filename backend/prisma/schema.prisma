@@ -34,3 +34,22 @@ model EventUpdate {
 
   event Event @relation(fields: [eventId], references: [id])
 }
+
+model EmailExtraction {
+  id        Int      @id @default(autoincrement())
+
+  company   String?
+  stage     String?
+  date      DateTime?
+  time      String?
+  venue     String?
+
+  isTimeEstimated Boolean @default(false)
+
+  confidence Float?
+  status     String?
+
+  rawText    String
+
+  createdAt  DateTime @default(now())
+}

@@ -8,11 +8,13 @@ import {
 import type { CreateEventInput } from "./event.types";
 import { prisma } from "../../lib/prisma";
 import { formatDateISTKey } from "../../shared/utils/date";
+import { toUTCDate, toISTKey } from "../../shared/utils/date";
 
 export const upsertEventService = async (data: CreateEventInput) => {
-  const dateObj = new Date(data.date);
+  const utcDate = toUTCDate(data.date);
+  const eventKeyDate = toISTKey(utcDate);
 
-  const existing = await findSimilarEvent(data.company, data.stage, dateObj);
+  const existing = await findSimilarEvent(data.company, data.stage, utcDate);
 
   if (existing) {
     const changes = detectChanges(existing, data);
@@ -37,7 +39,7 @@ export const upsertEventService = async (data: CreateEventInput) => {
     return prisma.event.update({
       where: { id: existing.id },
       data: {
-        date: dateObj,
+        date: utcDate,
         time: data.time ?? null,
         venue: data.venue ?? null,
       },
@@ -45,8 +47,7 @@ export const upsertEventService = async (data: CreateEventInput) => {
   }
 
   // create new
-  const formattedDate = formatDateISTKey(dateObj);
-  const eventKey = `${data.company}|${data.stage}|${formattedDate}`;
+  const eventKey = `${data.company}|${data.stage}|${eventKeyDate}`;
 
   return createEvent(data, eventKey);
 };
@@ -55,11 +56,14 @@ const detectChanges = (existing: any, incoming: any) => {
   const changes = [];
 
   // DATE
-  if (existing.date.toISOString() !== new Date(incoming.date).toISOString()) {
+  const existingDateKey = toISTKey(existing.date);
+  const incomingDateKey = toISTKey(toUTCDate(incoming.date)); // Use toUTCDate
+
+  if (existingDateKey !== incomingDateKey) {
     changes.push({
       field: "date",
-      oldValue: existing.date.toISOString(),
-      newValue: new Date(incoming.date).toISOString(),
+      oldValue: existingDateKey,
+      newValue: incomingDateKey,
     });
   }
 
