@@ -1,9 +1,9 @@
 import type { Request, Response } from "express";
-import { upsertEventService } from "./event.service";
+import { createEventService } from "./event.service";
 
 export const createEventController = async (req: Request, res: Response) => {
   try {
-    const event = await upsertEventService(req.body);
+    const event = await createEventService(req.body);
     res.status(201).json(event);
   } catch (error) {
     console.error(error);

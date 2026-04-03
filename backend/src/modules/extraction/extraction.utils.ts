@@ -1,10 +1,20 @@
+import type { VenueMeta } from "../email/email.parser";
+
 export const mergeExtraction = (ai: any, regex: any) => {
+  // AI returns a plain string; if AI extracted a venue, treat it as explicit.
+  // Otherwise fall back to the VenueMeta from the regex layer.
+  const venueMeta: VenueMeta =
+    ai.venue != null
+      ? { value: ai.venue as string, isExplicit: true }
+      : (regex.venue as VenueMeta);
+
   return {
     company: ai.company || regex.company,
     stage: ai.stage || regex.stage,
     date: ai.date || regex.date,
     time: ai.time ?? regex.time,
-    venue: ai.venue ?? regex.venue,
+    venue: venueMeta.value,   // plain string | null — used by DB writes & confidence scoring
+    venueMeta,                // carries isExplicit — used by update logic
   };
 };
 

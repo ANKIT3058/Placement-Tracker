@@ -20,6 +20,7 @@ model Event {
   time      String?
   venue     String?
   eventKey  String        @unique
+  status    String        @default("scheduled")
   createdAt DateTime      @default(now())
   updates   EventUpdate[]
 }
@@ -36,20 +37,20 @@ model EventUpdate {
 }
 
 model EmailExtraction {
-  id        Int      @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-  company   String?
-  stage     String?
-  date      DateTime?
-  time      String?
-  venue     String?
+  company String?
+  stage   String?
+  date    DateTime?
+  time    String?
+  venue   String?
 
   isTimeEstimated Boolean @default(false)
 
   confidence Float?
   status     String?
 
-  rawText    String
+  rawText String
 
-  createdAt  DateTime @default(now())
+  createdAt DateTime @default(now())
 }

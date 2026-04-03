@@ -1,5 +1,12 @@
 import { prisma } from "../../lib/prisma";
 import type { CreateEventInput } from "./event.types";
+import { subDays, addDays } from "date-fns";
+
+type NearbyEventsInput = {
+  company: string;
+  date: string;
+  windowDays: number;
+};
 
 export const createEvent = async (data: CreateEventInput, eventKey: string) => {
   return prisma.event.create({
@@ -62,6 +69,38 @@ export const findSimilarEvent = async (
         gte: start,
         lte: end,
       },
+    },
+  });
+};
+
+export const findNearbyEvents = async ({
+  company,
+  date,
+  windowDays,
+}: NearbyEventsInput) => {
+  const parsedDate = new Date(date);
+  return prisma.event.findMany({
+    where: {
+      company: company,
+      date: {
+        gte: subDays(parsedDate, windowDays),
+        lte: addDays(parsedDate, windowDays),
+      },
+    },
+  });
+};
+
+export const findByCompanyAndStage = async ({
+  company,
+  stage,
+}: {
+  company: string;
+  stage: string;
+}) => {
+  return prisma.event.findMany({
+    where: {
+      company: company,
+      stage: stage,
     },
   });
 };

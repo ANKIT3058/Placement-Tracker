@@ -1,7 +1,19 @@
+export type VenueMeta = { value: string | null; isExplicit: boolean };
+
+type ExtractedData = {
+  company: string;
+  stage: string;
+  date: string | null | undefined;
+  time: string | null;
+  venue: VenueMeta;
+};
+
+// ---------------- CLEAN ----------------
 export const cleanEmail = (text: string): string => {
   return text.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 };
 
+// ---------------- DATE ----------------
 export const extractExactDate = (text: string): Date | null => {
   const regex =
     /(\d{1,2})(st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
@@ -9,59 +21,39 @@ export const extractExactDate = (text: string): Date | null => {
   const match = text.match(regex);
   if (!match) return null;
 
-  const [, dayStr, , monthStrRaw] = match;
+  if (!match || !match[1] || !match[3]) return null;
 
-  if (!dayStr || !monthStrRaw) return null;
-
-  const day = parseInt(dayStr, 10);
-  const monthStr = monthStrRaw.toLowerCase();
+  const day = parseInt(match[1], 10);
+  const monthStr = match[3].toLowerCase();
 
   const months: Record<string, number> = {
-    jan: 0,
-    feb: 1,
-    mar: 2,
-    apr: 3,
-    may: 4,
-    jun: 5,
-    jul: 6,
-    aug: 7,
-    sep: 8,
-    oct: 9,
-    nov: 10,
-    dec: 11,
+    jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+    jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
   };
 
   const month = months[monthStr];
-
   if (month === undefined) return null;
 
   const now = new Date();
-  let year = now.getFullYear();
+  let year = now.getUTCFullYear();
 
   const date = new Date(Date.UTC(year, month, day));
-
-  if (date < now) {
-    year += 1;
-  }
+  if (date < now) year += 1;
 
   return new Date(Date.UTC(year, month, day));
 };
 
-export const extractRelativeDate = (text: string) => {
+export const extractRelativeDate = (text: string): Date | null => {
   const now = new Date();
 
   if (/tomorrow/i.test(text)) {
-    const d = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     d.setUTCDate(d.getUTCDate() + 1);
     return d;
   }
 
   if (/next week/i.test(text)) {
-    const d = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-    );
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     d.setUTCDate(d.getUTCDate() + 7);
     return d;
   }
@@ -69,91 +61,71 @@ export const extractRelativeDate = (text: string) => {
   return null;
 };
 
-export const resolveDate = (text: string) => {
-  const exact = extractExactDate(text);
-  const relative = extractRelativeDate(text);
-
-  if (exact) return exact; // priority
-  if (relative) return relative;
-
-  return null;
+export const resolveDate = (text: string): Date | null => {
+  return extractExactDate(text) || extractRelativeDate(text);
 };
 
-export const extractData = (text: string) => {
-  // COMPANY (simple match)
-  const companyMatch = text.match(/(Amazon|Google|Microsoft|Flipkart)/i);
+// ---------------- COMPANY ----------------
+export const extractCompany = (text: string): string => {
+  const match = text.match(
+    /([A-Z][a-zA-Z0-9&.\s]+?)\s+(OA|online assessment|interview|ppt)/i
+  );
 
-  // STAGE
-  let stage = "unknown";
-  if (/online assessment|oa/i.test(text)) stage = "OA";
-  else if (/interview/i.test(text)) stage = "Interview";
-  else if (/ppt/i.test(text)) stage = "PPT";
-
-  const dateObj = resolveDate(text);
-  const time = extractTime(text);
-  const venue = extractVenue(text);
-
-  console.log("email.parser.ts dateObj", dateObj);
-
-  return {
-    company: companyMatch ? companyMatch[0].toLowerCase().trim() : "unknown",
-    stage,
-    date: dateObj ? dateObj.toISOString().split("T")[0] : null,
-    time,
-    venue,
-  };
-};
-
-export const extractTime = (text: string) => {
-  // Check for contextual words combined with numbers first
-  const contextualNumberRegex =
-    /(at|around)?\s*(\d{1,2})(:\d{2})?\s*(in\s+the\s+)?(morning|afternoon|evening)/i;
-  const contextMatch = text.match(contextualNumberRegex);
-
-  if (contextMatch) {
-    const hourStr = contextMatch[2];
-    const minuteStr = contextMatch[3];
-    const context = contextMatch[5]?.toLowerCase();
-
-    if (!hourStr || isNaN(parseInt(hourStr, 10))) return null;
-
-    let hour = parseInt(hourStr, 10);
-    const minutes = minuteStr || ":00";
-
-    // Apply context: morning = AM, afternoon/evening = PM
-    if (context === "morning" && hour !== 12) {
-      // Keep as-is for AM
-    } else if (
-      (context === "afternoon" || context === "evening") &&
-      hour !== 12
-    ) {
-      hour += 12;
-    }
-
-    return `${hour.toString().padStart(2, "0")}${minutes}`;
+  if (match && match[1]) {
+    return match[1].trim().toLowerCase();
   }
 
-  // Exact time with AM/PM: "10 AM", "10:30 PM"
-  const exactTimeRegex = /(at|around)?\s*(\d{1,2})(:\d{2})?\s*(am|pm)/i;
-  const exactMatch = text.match(exactTimeRegex);
+  return "unknown";
+};
 
-  if (exactMatch) {
-    const hourStr = exactMatch[2];
-    const minuteStr = exactMatch[3];
-    const period = exactMatch[4]?.toLowerCase();
+// ---------------- STAGE ----------------
+export const extractStage = (text: string): string => {
+  if (/online assessment|oa/i.test(text)) return "OA";
+  if (/interview/i.test(text)) return "Interview";
+  if (/ppt/i.test(text)) return "PPT";
+  return "unknown";
+};
 
-    if (!hourStr || isNaN(parseInt(hourStr, 10))) return null;
-
-    let hour = parseInt(hourStr, 10);
-    const minutes = minuteStr || ":00";
-
+// ---------------- TIME ----------------
+export const extractTime = (text: string): string | null => {
+  // Pattern 1: "at 10 AM", "5 PM", "around 3:30 pm"
+  const ampmMatch = text.match(/\b(?:at\s+|around\s+)?(\d{1,2})(:\d{2})?\s*(am|pm)\b/i);
+  if (ampmMatch?.[1] && ampmMatch?.[3]) {
+    let hour = parseInt(ampmMatch[1], 10);
+    const minutes = ampmMatch[2] ?? ":00";
+    const period = ampmMatch[3].toLowerCase();
     if (period === "pm" && hour !== 12) hour += 12;
     if (period === "am" && hour === 12) hour = 0;
-
     return `${hour.toString().padStart(2, "0")}${minutes}`;
   }
 
-  // Vague time only (no numbers)
+  // Pattern 2a: "at 5 morning/afternoon/evening", "at 10 in the evening"
+  const atContextMatch = text.match(
+    /\b(?:at|around)\s+(\d{1,2})(:\d{2})?\s*(?:in\s+the\s+)?(morning|afternoon|evening)\b/i
+  );
+  if (atContextMatch?.[1] && atContextMatch?.[3]) {
+    let hour = parseInt(atContextMatch[1], 10);
+    const minutes = atContextMatch[2] ?? ":00";
+    const context = atContextMatch[3].toLowerCase();
+    if (context === "afternoon" || context === "evening") {
+      if (hour !== 12) hour += 12;
+    }
+    return `${hour.toString().padStart(2, "0")}${minutes}`;
+  }
+
+  // Pattern 2b: "5 in the evening" (no leading "at")
+  const inTheMatch = text.match(/\b(\d{1,2})(:\d{2})?\s+in\s+the\s+(morning|afternoon|evening)\b/i);
+  if (inTheMatch?.[1] && inTheMatch?.[3]) {
+    let hour = parseInt(inTheMatch[1], 10);
+    const minutes = inTheMatch[2] ?? ":00";
+    const context = inTheMatch[3].toLowerCase();
+    if (context === "afternoon" || context === "evening") {
+      if (hour !== 12) hour += 12;
+    }
+    return `${hour.toString().padStart(2, "0")}${minutes}`;
+  }
+
+  // Fallback: standalone time-of-day words
   if (/\bmorning\b/i.test(text)) return "10:00";
   if (/\bafternoon\b/i.test(text)) return "14:00";
   if (/\bevening\b/i.test(text)) return "18:00";
@@ -161,11 +133,58 @@ export const extractTime = (text: string) => {
   return null;
 };
 
-export const extractVenue = (text: string) => {
-  const venueRegex =
-    /(hackerrank|hackerearth|zoom|google meet|teams|online|offline|classroom|campus)/i;
+// ---------------- VENUE ----------------
+const VENUE_NOISE_WORDS = ["seating", "plan", "pfa", "please", "attached", "attachment", "find"];
 
-  const match = text.match(venueRegex);
+export const extractVenue = (text: string): VenueMeta => {
+  const lowerText = text.toLowerCase();
 
-  return match ? match[0].toLowerCase() : null;
+  // Known platforms are unambiguous and always explicit
+  const knownMatch = lowerText.match(
+    /(hackerrank|hackerearth|zoom|google meet|teams|online|offline|classroom|campus)/i
+  );
+  if (knownMatch) return { value: knownMatch[0], isExplicit: true };
+
+  // "venue:" keyword is a strong explicit signal — even a rejected value is explicit
+  const hasVenueKeyword = /\bvenue:/i.test(lowerText);
+
+  const patternMatch = lowerText.match(
+    /(?:at|venue:)\s*([a-zA-Z0-9]+(?:\s+[a-zA-Z0-9]+){0,2})/i
+  );
+  if (patternMatch) {
+    const venue = patternMatch[1]?.trim();
+    const words = venue?.split(/\s+/) ?? [];
+    const isAmbiguous = VENUE_NOISE_WORDS.some((w) => words.includes(w));
+    if (venue && !/\d/.test(venue) && !isAmbiguous) {
+      return { value: venue, isExplicit: true };
+    }
+    // Value rejected — only treat as explicit when "venue:" was present.
+    // Avoids "at 10 AM" incorrectly clearing an existing venue.
+    if (hasVenueKeyword) {
+      return { value: null, isExplicit: true };
+    }
+  }
+
+  // Known physical locations without an explicit keyword
+  const knownLocations = ["tpo", "auditorium", "seminar hall", "lecture hall", "room"];
+  for (const loc of knownLocations) {
+    if (lowerText.includes(loc)) return { value: loc, isExplicit: false };
+  }
+
+  return { value: null, isExplicit: false };
+};
+
+// ---------------- MAIN ----------------
+export const extractData = (text: string): ExtractedData => {
+  const cleaned = cleanEmail(text);
+
+  const dateObj = resolveDate(cleaned);
+
+  return {
+    company: extractCompany(cleaned),
+    stage: extractStage(cleaned),
+    date: dateObj ? dateObj.toISOString().split("T")[0] : null,
+    time: extractTime(cleaned),
+    venue: extractVenue(cleaned), // VenueMeta
+  };
 };
