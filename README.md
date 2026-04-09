@@ -1,22 +1,31 @@
 # 🚀 Placement Tracker
 
-An **AI-powered Placement Intelligence System** that processes placement-related emails, extracts structured information, and intelligently tracks and updates events.
+An **AI-powered Placement Intelligence System** that processes placement-related emails, extracts structured information, and intelligently manages event tracking.
+
+> ⚡ Built using production-grade backend principles: deterministic parsing, confidence-based decisions, intent-aware updates, and robust testing.
 
 ---
 
-## 🧠 Problem Statement
+## 🧠 Problem
 
-Placement emails are often:
+Placement emails are:
 
 * unstructured
 * inconsistent
-* hard to track manually
+* difficult to track manually
 
-This system automates the process of:
+👉 Result: missed deadlines, confusion, and duplicate tracking.
 
-* extracting important details
-* organizing events
-* detecting updates intelligently
+---
+
+## 🎯 Solution
+
+This system:
+
+* extracts structured data from emails
+* prevents duplicate events
+* intelligently updates existing records
+* handles uncertainty using confidence-based decisions
 
 ---
 
@@ -25,97 +34,294 @@ This system automates the process of:
 * **Backend:** Node.js, Express, TypeScript
 * **Database:** PostgreSQL (Docker)
 * **ORM:** Prisma
+* **Testing:** Jest + ts-jest
 * **AI (Optional):** OpenAI API
-* **Architecture:** Modular, feature-based design
+* **Architecture:** Modular (feature-based)
+
+---
+
+## 🏗️ System Architecture
+
+```text
+POST /email
+   ↓
+Email Service
+   ↓
+Extraction Service
+   ↓
+Matching Service
+   ↓
+Event Service
+   ↓
+PostgreSQL
+```
+
+---
+
+## 🔄 End-to-End Flow
+
+1. Receive email via API
+2. Clean and normalize text
+3. Extract structured data
+4. Compute confidence score
+5. Match against existing events
+6. Decision layer:
+
+   * update event
+   * create new event
+   * create review event
+7. Store audit logs
+8. Return response
 
 ---
 
 ## 🔥 Key Features
 
+---
+
 ### 📧 1. Email Processing Pipeline
 
 * Endpoint: `POST /email`
-* Accepts raw email text
-* Cleans and processes content automatically
+* Fully automated processing pipeline
 
 ---
 
-### 🧩 2. Deterministic Extraction System (Core)
+### 🧩 2. Deterministic Extraction System
 
-* Regex-based extraction (no AI dependency)
-* Handles:
+* Regex-based (no AI dependency)
+* Handles real-world formats:
 
-  * Dates → `20th Aug`, `next week`, `tomorrow`
-  * Time → `10 AM`, `around 5 in the evening`
-  * Venue → HackerRank, Zoom, etc.
-* Context-aware parsing (e.g., *"evening" → 17:00*)
-
----
-
-### 🧠 3. Hybrid AI + Regex System
-
-* AI used as **optional enhancement**
-* Regex ensures **deterministic reliability**
-* Feature-flag controlled (`USE_AI`)
+| Field | Examples                            |
+| ----- | ----------------------------------- |
+| Date  | `20th Aug`, `tomorrow`, `next week` |
+| Time  | `10 AM`, `5 in evening`             |
+| Venue | HackerRank, Zoom, Auditorium        |
 
 ---
 
-### 🗓️ 4. Timezone-Safe Architecture (🔥)
+### 🧠 3. Hybrid AI + Regex (Optional)
 
-* Database stores all dates in **UTC**
-* Business logic uses **IST normalization**
-* Prevents date drift issues
+* AI improves flexibility
+* Regex ensures reliability
+* Controlled via `USE_AI`
 
 ---
 
-### 🔑 5. Smart Event Key System
+### 🗓️ 4. Timezone-Safe Design
 
-```
+* DB stores **UTC**
+* Business logic uses **IST**
+* Prevents date mismatch bugs
+
+---
+
+### 🔑 5. Smart Event Identity
+
+```text
 eventKey = company | stage | IST_date
 ```
 
-* Ensures uniqueness
-* Prevents duplicate events
+* prevents duplicates
+* ensures consistent matching
 
 ---
 
-### 🔄 6. Intelligent Update Detection
+### 🔍 6. Confidence-Aware Matching (🔥 Advanced)
 
-Automatically detects and tracks changes in:
+Matching evolved from:
 
-* Date
-* Time
-* Venue
+```text
+first match wins ❌
+```
 
-Stored in:
+to:
 
-* `event_updates` table
+```text
+best match wins (scoring-based) ✅
+```
+
+Scoring uses:
+
+* date proximity
+* stage match
+* confidence alignment
 
 ---
 
-### 🧾 7. Event History Tracking
+### 🧠 7. Confidence Scoring System
 
-Maintains a log of all updates for audit and traceability.
+Each extraction produces:
+
+```ts
+{
+  data,
+  confidence: number
+}
+```
+
+Used for:
+
+* update decisions
+* matching quality
+* review detection
 
 ---
 
-## 🏗️ Architecture
+### 🔄 8. Confidence-Aware Updates
 
-```
-email → extraction → parser → event service → database
+```ts
+if (newConfidence < existingConfidence) {
+  skip update;
+}
 ```
 
-### Folder Structure
+Prevents:
 
+* data corruption
+* overwriting good data with weak input
+
+---
+
+### ⚠️ 9. Low-Confidence Review System (🔥 Product Feature)
+
+If extraction is unreliable:
+
+```ts
+status: "review"
+reviewReason: "Low confidence extraction"
 ```
+
+Behavior:
+
+* ❌ no update to existing event
+* ✅ safe event creation
+* enables human review
+
+---
+
+### 🧠 10. Explainable Matching
+
+Each match includes reasoning:
+
+```ts
+{
+  explanation: "Exact date match + strong confidence alignment"
+}
+```
+
+Benefits:
+
+* debugging
+* transparency
+* interview clarity
+
+---
+
+### 🧠 11. Intent-Aware Data Handling
+
+Handles:
+
+| Scenario         | Behavior           |
+| ---------------- | ------------------ |
+| missing field    | preserve old value |
+| explicit invalid | clear value        |
+
+Using:
+
+```ts
+VenueMeta = {
+  value,
+  isExplicit
+}
+```
+
+---
+
+### 🔄 12. Intelligent Update Detection
+
+Updates only when:
+
+```ts
+value exists && value changed
+```
+
+---
+
+### 🧾 13. Audit Logging
+
+All changes stored in:
+
+* `event_updates`
+
+Tracks:
+
+* reschedules
+* time changes
+* venue changes
+
+---
+
+## 🗃️ Database Design
+
+### Event
+
+* company
+* stage
+* date (UTC)
+* time
+* venue
+* confidence
+* status
+* reviewReason
+
+---
+
+### EventUpdates
+
+* event_id
+* field
+* old_value
+* new_value
+* timestamp
+
+---
+
+## 🧪 Testing
+
+### Coverage
+
+* Unit tests:
+
+  * extraction
+  * matching
+  * event logic
+
+* Integration:
+
+  * full `/email` pipeline
+
+---
+
+### Testing Principles
+
+* test service layer only
+* mock all dependencies
+* no Prisma in unit tests
+* isolate tests
+
+---
+
+## 📁 Project Structure
+
+```text
 backend/
 ├── src/
 │   ├── modules/
 │   │   ├── email/
 │   │   ├── extraction/
 │   │   ├── event/
+│   │   ├── matching/
 │   ├── shared/
-│   │   ├── utils/
 │   ├── lib/
 │   └── app.ts
 ├── prisma/
@@ -124,100 +330,41 @@ backend/
 
 ---
 
-## 🗃️ Database Design (Current)
+## 🧠 Design Principles
 
-### Implemented:
-
-* `events`
-* `event_updates`
-
-### Planned (Incremental):
-
-* `emails`
-* `event_emails`
-* `email_extractions`
-* `companies`
+* Deterministic > probabilistic
+* Trust-aware decisions
+* Defensive programming
+* Modular architecture
+* No undefined in API responses
+* Intent-aware data modeling
 
 ---
 
-## 🔁 Data Flow
+## 📘 Detailed Design
 
-1. Receive email via API
-2. Clean and preprocess text
-3. Extract structured data (regex + optional AI)
-4. Normalize date (UTC)
-5. Generate event key (IST)
-6. Match existing event
-7. Create or update event
-8. Store changes
-
----
-
-## 🧪 Example
-
-### Input:
-
-```json
-{
-  "body": "Amazon is hiring! OA will be held next week, 20th Aug around 5 in the evening on HackerRank."
-}
-```
-
-### Output:
-
-```json
-{
-  "company": "amazon",
-  "stage": "OA",
-  "date": "2026-08-20T00:00:00.000Z",
-  "time": "17:00",
-  "venue": "hackerrank",
-  "eventKey": "amazon|OA|2026-08-20"
-}
-```
+See [SYSTEM_DESIGN.md](./backend/SYSTEM_DESIGN.md) for full architecture and design decisions.
 
 ---
 
 ## 🚀 Getting Started
 
-### 1. Clone the repo
-
 ```bash
 git clone https://github.com/YOUR_USERNAME/Placement-Tracker.git
-cd Placement-Tracker/backend
-```
-
-### 2. Install dependencies
-
-```bash
+cd backend
 npm install
 ```
 
-### 3. Setup environment
-
-Create `.env` file:
+### Setup `.env`
 
 ```
 DATABASE_URL=your_postgres_url
-OPENAI_API_KEY=your_key (optional)
 USE_AI=false
 ```
 
-### 4. Start database (Docker)
-
 ```bash
 docker-compose up -d
-```
-
-### 5. Run Prisma
-
-```bash
 npx prisma migrate dev
-```
-
-### 6. Start server
-
-```bash
 npm run dev
 ```
 
@@ -227,10 +374,6 @@ npm run dev
 
 ### POST /email
 
-Process placement email
-
-#### Request:
-
 ```json
 {
   "body": "email content"
@@ -239,39 +382,29 @@ Process placement email
 
 ---
 
-## 🧠 Design Principles
-
-* Deterministic > probabilistic
-* Simple > overengineered
-* Modular > monolithic logic
-* Fault-tolerant pipeline
-
----
-
 ## 📈 Future Improvements
 
-* Smart event matching (fuzzy + reschedule detection)
-* Confidence scoring system
-* Email ingestion (Gmail integration)
-* Dashboard & analytics
-* User-specific filtering
-* Notifications system
+* Review dashboard
+* Manual correction system
+* Email ingestion (Gmail)
+* Confidence analytics
+* Semantic matching (embeddings)
 
 ---
 
 ## 🏆 Resume Description
 
-> Built an AI-powered placement tracking system that processes emails, extracts structured information using deterministic parsing and LLMs, and intelligently updates events using timezone-safe normalization and smart matching logic.
+> Built a production-grade backend system that processes unstructured placement emails into structured events using deterministic parsing, confidence-based decision making, intelligent matching, and a low-confidence review system, ensuring high data integrity and reliability.
 
 ---
 
 ## 👨‍💻 Author
 
-Ankit Kumar
-B.Tech CSE | Backend & Systems Enthusiast
+**Ankit Kumar Anand**
+B.Tech CSE | Backend & Systems
 
 ---
 
-## ⭐ If you like this project
+## ⭐ Support
 
-Give it a star ⭐ and feel free to contribute!
+If you like this project, give it a star ⭐
