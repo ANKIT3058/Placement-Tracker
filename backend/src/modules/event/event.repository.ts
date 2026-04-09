@@ -17,6 +17,9 @@ export const createEvent = async (data: CreateEventInput, eventKey: string) => {
       time: data.time ?? null,
       venue: data.venue ?? null,
       eventKey, // use passed value
+      confidence: data.confidence ?? 0,
+      status: data.status ?? "scheduled",
+      reviewReason: data.reviewReason ?? null,
     },
   });
 };
