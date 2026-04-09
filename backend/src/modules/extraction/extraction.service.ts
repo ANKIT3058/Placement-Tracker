@@ -2,18 +2,30 @@ import OpenAI from "openai";
 import { extractData } from "../email/email.parser";
 import {
   mergeExtraction,
-  calculateConfidence,
   getExtractionStatus,
   detectEstimatedTime,
 } from "./extraction.utils";
 import { saveExtraction } from "./extraction.repository";
+import { computeConfidence } from "./confidence.utils";
 
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+let client: OpenAI | null = null;
+
+const getClient = () => {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY not set");
+  }
+
+  if (!client) {
+    client = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    });
+  }
+  return client;
+};
 
 export const extractWithAI = async (text: string) => {
-  const response = await client.chat.completions.create({
+  const openai = getClient();
+  const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
       {
@@ -91,13 +103,24 @@ export const extract = async (text: string) => {
 
   const merged = mergeExtraction(aiData || {}, regexData);
 
-  const baseConfidence = calculateConfidence(merged);
-
-  const confidence = aiData ? baseConfidence : baseConfidence * 0.7; // degrade confidence
-
   const status = getExtractionStatus(merged);
 
   const isTimeEstimated = detectEstimatedTime(text);
+
+  const { confidence, breakdown } = computeConfidence({
+    company: merged.company,
+    stage: merged.stage,
+    date: merged.date ? new Date(merged.date) : null,
+    time: merged.time,
+    venueMeta: merged.venueMeta,
+    isTimeEstimated,
+    rawText: text,
+  });
+
+  let finalConfidence = confidence;
+  if (!aiData) {
+    finalConfidence *= 0.7;
+  }
 
   // SAVE TO DB
   await saveExtraction({
@@ -107,14 +130,14 @@ export const extract = async (text: string) => {
     time: merged.time,
     venue: merged.venue,
     isTimeEstimated,
-    confidence,
+    confidence: finalConfidence,
     status,
     rawText: text,
   });
 
   return {
     data: merged,
-    confidence,
+    confidence: finalConfidence,
     status,
   };
 };
