@@ -13,16 +13,17 @@ datasource db {
 }
 
 model Event {
-  id        Int           @id @default(autoincrement())
-  company   String
-  stage     String
-  date      DateTime
-  time      String?
-  venue     String?
-  eventKey  String        @unique
-  status    String        @default("scheduled")
-  createdAt DateTime      @default(now())
-  updates   EventUpdate[]
+  id         Int           @id @default(autoincrement())
+  company    String
+  stage      String
+  date       DateTime
+  time       String?
+  venue      String?
+  eventKey   String        @unique
+  status     String        @default("scheduled")
+  confidence Float?        @default(0)
+  createdAt  DateTime      @default(now())
+  updates    EventUpdate[]
 }
 
 model EventUpdate {
