@@ -31,6 +31,21 @@ export const updateEventService = async (
     return existing;
   }
 
+  const existingConfidence = existing.confidence ?? 0;
+  const newConfidence = incoming.confidence ?? 0;
+
+  console.log("UPDATE CHECK:", {
+    existing: existingConfidence,
+    incoming: newConfidence,
+  });
+
+  // CORE RULE
+  if (newConfidence < existingConfidence) {
+    console.log("Skipping update due to lower confidence");
+
+    return existing; // stop update
+  }
+
   // Store change history
   for (const change of changes) {
     await prisma.eventUpdate.create({
@@ -74,10 +89,13 @@ export const updateEventService = async (
     });
   }
 
-  return updateEventRepo(eventId, updateData);
+  return updateEventRepo(eventId, {
+    ...updateData,
+    confidence: newConfidence,
+  });
 };
 
-const detectChanges = (existing: any, incoming: any) => {
+export const detectChanges = (existing: any, incoming: any) => {
   const changes = [];
   let isRescheduled = false;
 
