@@ -13,45 +13,53 @@ datasource db {
 }
 
 model Event {
-  id         Int           @id @default(autoincrement())
-  company    String
-  stage      String
-  date       DateTime
-  time       String?
-  venue      String?
-  eventKey   String        @unique
-  status     String        @default("scheduled")
-  confidence Float?        @default(0)
-  createdAt  DateTime      @default(now())
-  updates    EventUpdate[]
+  id Int @id @default(autoincrement())
+
+  company String
+  stage   String
+  date    DateTime
+  time    String?
+  venue   String?
+
+  eventKey String @unique
+
+  confidence   Float   @default(0)
+  status       String  @default("scheduled")
+  reviewReason String?
+
+  isTimeEstimated Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  updates EventUpdate[]
 }
 
 model EventUpdate {
-  id        Int      @id @default(autoincrement())
-  eventId   Int
-  field     String
-  oldValue  String
-  newValue  String
+  id Int @id @default(autoincrement())
+
+  eventId  Int
+  field    String
+  oldValue String
+  newValue String
+
   updatedAt DateTime @default(now())
 
-  event Event @relation(fields: [eventId], references: [id])
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
 }
 
 model EmailExtraction {
   id Int @id @default(autoincrement())
 
-  company String?
-  stage   String?
-  date    DateTime?
-  time    String?
-  venue   String?
-
-  isTimeEstimated Boolean @default(false)
-
-  confidence Float?
-  status     String?
-
-  rawText String
+  company         String?
+  stage           String?
+  date            DateTime?
+  time            String?
+  venue           String?
+  isTimeEstimated Boolean?
+  status          String?
+  confidence      Float
+  rawText         String?
 
   createdAt DateTime @default(now())
 }

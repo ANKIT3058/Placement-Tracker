@@ -150,3 +150,35 @@ export const detectChanges = (existing: any, incoming: any) => {
 
   return { changes, isRescheduled };
 };
+
+// GET EVENTS
+export const getEventsService = async ({ status }: { status?: string }) => {
+  const where: any = {};
+
+  if (status) where.status = status;
+
+  return prisma.event.findMany({
+    where,
+    orderBy: { confidence: "asc" }, // low confidence first
+  });
+};
+
+// GET SINGLE EVENT
+export const getEventByIdService = async (id: number) => {
+  return prisma.event.findUnique({
+    where: { id },
+  });
+};
+
+// MANUAL UPDATE (REVIEW FIX)
+export const updateEventManuallyService = async (id: number, data: any) => {
+  return prisma.event.update({
+    where: { id },
+    data: {
+      ...data,
+      confidence: 1.0, // human override
+      status: "confirmed", // review → confirmed
+      reviewReason: null,
+    },
+  });
+};

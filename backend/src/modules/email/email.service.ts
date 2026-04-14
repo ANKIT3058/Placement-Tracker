@@ -7,6 +7,9 @@ import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config";
 import { createEventService, updateEventService } from "../event/event.service";
 
 export const processEmail = async (email: EmailInput) => {
+  if (!email) {
+    throw new Error("Email text is required");
+  }
   const cleanText = cleanEmail(email.body).toLowerCase();
 
   const { data, confidence } = await extract(cleanText);
@@ -31,7 +34,15 @@ export const processEmail = async (email: EmailInput) => {
     return createEventService({
       ...enrichedData,
       status: "review",
-      reviewReason: `Low confidence (${confidence.toFixed(2)})`,
+      reviewReason: `Low confidence: missing ${
+        !data.company
+          ? "company"
+          : !data.venue
+            ? "venue"
+            : !data.time
+              ? "time"
+              : "uncertain data"
+      }`,
     });
   }
 

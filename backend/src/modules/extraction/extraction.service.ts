@@ -37,13 +37,18 @@ Extract structured data from placement emails.
 
 Rules:
 - Convert dates like "20th Aug" → "YYYY-MM-DD"
-- Assume current year if not provided
+- Use the explicit year from the email if present (e.g. "16th August 2025" → "2025-08-16")
+- Assume current year ONLY if no year is given
 - Convert vague times:
   - "morning" → "10:00"
   - "afternoon" → "14:00"
   - "evening" → "18:00"
 - If time is approximate, still return best guess (DO NOT return null)
 - Extract platform as venue (e.g., HackerRank, Zoom)
+  - If multiple events exist:
+  - Extract the most important one
+  - Prefer Interview > Test > PPT
+  - Ignore incomplete information
 
 Return STRICT JSON only:
 {
@@ -118,9 +123,15 @@ export const extract = async (text: string) => {
   });
 
   let finalConfidence = confidence;
-  if (!aiData) {
-    finalConfidence *= 0.7;
-  }
+  let penalty = 0;
+
+  // scoreCompany already returns 0 for "unknown"; small extra penalty signals low trust
+  if (merged.company === "unknown") penalty += 0.1;
+  // venue and time missing: venue is slightly more critical (location is harder to guess)
+  if (!merged.venue) penalty += 0.15;
+  if (!merged.time) penalty += 0.1;
+
+  finalConfidence = Math.max(0, confidence - penalty);
 
   // SAVE TO DB
   await saveExtraction({

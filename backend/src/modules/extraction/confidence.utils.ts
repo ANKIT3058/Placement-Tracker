@@ -69,9 +69,9 @@ export const computeConfidence = (
 //
 
 const scoreCompany = (company: string | null): number => {
-  if (!company) return 0;
+  // "unknown" must score 0 — previously returned 1 because length > 2
+  if (!company || company === "unknown") return 0;
 
-  // simple heuristic: longer names more reliable
   if (company.length > 2) return 1;
 
   return 0.7;
