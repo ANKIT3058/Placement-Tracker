@@ -1,8 +1,8 @@
 # 🚀 Placement Tracker
 
-An **AI-powered Placement Intelligence System** that processes placement-related emails, extracts structured information, and intelligently manages event tracking.
+An **AI-powered Placement Intelligence System** that converts unstructured placement emails into structured, trackable events.
 
-> ⚡ Built using production-grade backend principles: deterministic parsing, confidence-based decisions, intent-aware updates, and robust testing.
+> ⚡ Built with production-grade principles: confidence-aware decisions, intent-aware updates, and human-in-the-loop review.
 
 ---
 
@@ -12,9 +12,9 @@ Placement emails are:
 
 * unstructured
 * inconsistent
-* difficult to track manually
+* hard to track manually
 
-👉 Result: missed deadlines, confusion, and duplicate tracking.
+👉 Result: missed deadlines, duplicate tracking, confusion
 
 ---
 
@@ -23,9 +23,19 @@ Placement emails are:
 This system:
 
 * extracts structured data from emails
-* prevents duplicate events
-* intelligently updates existing records
-* handles uncertainty using confidence-based decisions
+* intelligently updates or creates events
+* prevents duplicates using smart matching
+* handles uncertainty using confidence scoring
+
+---
+
+## 🖥️ Demo Flow
+
+1. Paste placement email
+2. System extracts structured data
+3. High confidence → auto update
+4. Low confidence → sent to review
+5. Manual correction → confirmed event
 
 ---
 
@@ -34,140 +44,41 @@ This system:
 * **Backend:** Node.js, Express, TypeScript
 * **Database:** PostgreSQL (Docker)
 * **ORM:** Prisma
-* **Testing:** Jest + ts-jest
-* **AI (Optional):** OpenAI API
-* **Architecture:** Modular (feature-based)
+* **Frontend:** React, TypeScript
+* **Testing:** Jest
+* **AI (Optional):** OpenAI
 
 ---
 
-## 🏗️ System Architecture
+## 🏗️ Architecture
 
 ```text
-POST /email
+Email Input
    ↓
-Email Service
+Extraction (Regex + AI)
    ↓
-Extraction Service
+Validation Layer
    ↓
-Matching Service
+Confidence Scoring
    ↓
-Event Service
+Matching System
+   ↓
+Decision Engine
+   ↓
+→ Update Event
+→ Review Queue
    ↓
 PostgreSQL
 ```
 
 ---
 
-## 🔄 End-to-End Flow
-
-1. Receive email via API
-2. Clean and normalize text
-3. Extract structured data
-4. Compute confidence score
-5. Match against existing events
-6. Decision layer:
-
-   * update event
-   * create new event
-   * create review event
-7. Store audit logs
-8. Return response
-
----
-
 ## 🔥 Key Features
 
----
+### 🧠 Confidence-Aware System (Core Innovation)
 
-### 📧 1. Email Processing Pipeline
-
-* Endpoint: `POST /email`
-* Fully automated processing pipeline
-
----
-
-### 🧩 2. Deterministic Extraction System
-
-* Regex-based (no AI dependency)
-* Handles real-world formats:
-
-| Field | Examples                            |
-| ----- | ----------------------------------- |
-| Date  | `20th Aug`, `tomorrow`, `next week` |
-| Time  | `10 AM`, `5 in evening`             |
-| Venue | HackerRank, Zoom, Auditorium        |
-
----
-
-### 🧠 3. Hybrid AI + Regex (Optional)
-
-* AI improves flexibility
-* Regex ensures reliability
-* Controlled via `USE_AI`
-
----
-
-### 🗓️ 4. Timezone-Safe Design
-
-* DB stores **UTC**
-* Business logic uses **IST**
-* Prevents date mismatch bugs
-
----
-
-### 🔑 5. Smart Event Identity
-
-```text
-eventKey = company | stage | IST_date
-```
-
-* prevents duplicates
-* ensures consistent matching
-
----
-
-### 🔍 6. Confidence-Aware Matching (🔥 Advanced)
-
-Matching evolved from:
-
-```text
-first match wins ❌
-```
-
-to:
-
-```text
-best match wins (scoring-based) ✅
-```
-
-Scoring uses:
-
-* date proximity
-* stage match
-* confidence alignment
-
----
-
-### 🧠 7. Confidence Scoring System
-
-Each extraction produces:
-
-```ts
-{
-  data,
-  confidence: number
-}
-```
-
-Used for:
-
-* update decisions
-* matching quality
-* review detection
-
----
-
-### 🔄 8. Confidence-Aware Updates
+* Each extraction has a **confidence score**
+* System decisions are based on reliability, not assumptions
 
 ```ts
 if (newConfidence < existingConfidence) {
@@ -175,139 +86,84 @@ if (newConfidence < existingConfidence) {
 }
 ```
 
-Prevents:
+---
 
-* data corruption
-* overwriting good data with weak input
+### 🔍 Intelligent Matching (No Duplicates)
+
+* Exact match using `eventKey`
+
+* Soft match using scoring:
+
+* date proximity
+
+* stage match
+
+* confidence
+
+👉 ensures correct event updates
 
 ---
 
-### ⚠️ 9. Low-Confidence Review System (🔥 Product Feature)
+### ⚠️ Human-in-the-Loop Review
 
-If extraction is unreliable:
+Low-confidence extraction:
+
+* ❌ does NOT update existing data
+* ✅ creates review event
 
 ```ts
 status: "review"
 reviewReason: "Low confidence extraction"
 ```
 
-Behavior:
-
-* ❌ no update to existing event
-* ✅ safe event creation
-* enables human review
-
 ---
 
-### 🧠 10. Explainable Matching
+### 🧠 Intent-Aware Updates
 
-Each match includes reasoning:
-
-```ts
-{
-  explanation: "Exact date match + strong confidence alignment"
-}
-```
-
-Benefits:
-
-* debugging
-* transparency
-* interview clarity
-
----
-
-### 🧠 11. Intent-Aware Data Handling
-
-Handles:
+Distinguishes:
 
 | Scenario         | Behavior           |
 | ---------------- | ------------------ |
-| missing field    | preserve old value |
-| explicit invalid | clear value        |
-
-Using:
-
-```ts
-VenueMeta = {
-  value,
-  isExplicit
-}
-```
+| Missing field    | Preserve old value |
+| Explicit invalid | Clear value        |
 
 ---
 
-### 🔄 12. Intelligent Update Detection
+### 🧾 Audit Logging
 
-Updates only when:
+Tracks all updates:
 
-```ts
-value exists && value changed
-```
-
----
-
-### 🧾 13. Audit Logging
-
-All changes stored in:
-
-* `event_updates`
-
-Tracks:
-
-* reschedules
 * time changes
-* venue changes
+* venue updates
+* reschedules
 
 ---
 
-## 🗃️ Database Design
+## 🗃️ Database
 
 ### Event
 
 * company
 * stage
-* date (UTC)
+* date
 * time
 * venue
 * confidence
 * status
-* reviewReason
 
----
+### EventUpdate
 
-### EventUpdates
-
-* event_id
-* field
-* old_value
-* new_value
+* field changes
+* old → new values
 * timestamp
 
 ---
 
 ## 🧪 Testing
 
-### Coverage
-
-* Unit tests:
-
-  * extraction
-  * matching
-  * event logic
-
-* Integration:
-
-  * full `/email` pipeline
-
----
-
-### Testing Principles
-
-* test service layer only
-* mock all dependencies
-* no Prisma in unit tests
-* isolate tests
+* Unit tests for extraction, matching, logic
+* Integration tests for full pipeline
+* Dependency mocking (no DB in unit tests)
 
 ---
 
@@ -315,35 +171,15 @@ Tracks:
 
 ```text
 backend/
-├── src/
-│   ├── modules/
-│   │   ├── email/
-│   │   ├── extraction/
-│   │   ├── event/
-│   │   ├── matching/
-│   ├── shared/
-│   ├── lib/
-│   └── app.ts
-├── prisma/
-└── docker-compose.yml
+  src/
+    modules/
+      email/
+      extraction/
+      event/
+      matching/
+    shared/
+    lib/
 ```
-
----
-
-## 🧠 Design Principles
-
-* Deterministic > probabilistic
-* Trust-aware decisions
-* Defensive programming
-* Modular architecture
-* No undefined in API responses
-* Intent-aware data modeling
-
----
-
-## 📘 Detailed Design
-
-See [SYSTEM_DESIGN.md](./backend/SYSTEM_DESIGN.md) for full architecture and design decisions.
 
 ---
 
@@ -355,9 +191,9 @@ cd backend
 npm install
 ```
 
-### Setup `.env`
+### Setup
 
-```
+```env
 DATABASE_URL=your_postgres_url
 USE_AI=false
 ```
@@ -382,19 +218,28 @@ npm run dev
 
 ---
 
-## 📈 Future Improvements
+## 📈 Future Scope
 
-* Review dashboard
-* Manual correction system
-* Email ingestion (Gmail)
+* Gmail integration
+* Notification system
 * Confidence analytics
-* Semantic matching (embeddings)
+* Multi-event extraction
 
 ---
 
-## 🏆 Resume Description
+## 🧠 Key Design Principles
 
-> Built a production-grade backend system that processes unstructured placement emails into structured events using deterministic parsing, confidence-based decision making, intelligent matching, and a low-confidence review system, ensuring high data integrity and reliability.
+* Deterministic > probabilistic
+* Never trust raw extraction
+* Preserve high-confidence data
+* Handle uncertainty explicitly
+* Safe failure > incorrect updates
+
+---
+
+## 🏆 Resume Summary
+
+> Built a production-grade backend system that processes unstructured placement emails into structured events using confidence-based decision making, intelligent matching, and a human-in-the-loop review system.
 
 ---
 
@@ -405,6 +250,4 @@ B.Tech CSE | Backend & Systems
 
 ---
 
-## ⭐ Support
-
-If you like this project, give it a star ⭐
+⭐ If you like this project, consider giving it a star!
