@@ -1,4 +1,4 @@
-import type { VenueMeta } from "../email/email.parser";
+import type { VenueMeta } from "../email/email.parser.js";
 
 export const mergeExtraction = (ai: any, regex: any) => {
   // AI returns a plain string; if AI extracted a venue, treat it as explicit.

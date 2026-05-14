@@ -13,6 +13,7 @@ module.exports = {
           module: "commonjs",
           moduleResolution: "node",
           verbatimModuleSyntax: false, // ESM-only flag; must be off for CJS output
+          types: ["node", "jest"],     // jest globals needed in test files
         },
       },
     ],

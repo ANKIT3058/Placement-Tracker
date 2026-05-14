@@ -1,10 +1,10 @@
-import type { EmailInput } from "./email.types";
-import { cleanEmail } from "./email.parser";
-import { extract } from "../extraction/extraction.service";
-import { matchEventV2 } from "../matching/matching.service";
-import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config";
+import type { EmailInput } from "./email.types.js";
+import { cleanEmail } from "./email.parser.js";
+import { extract } from "../extraction/extraction.service.js";
+import { matchEventV2 } from "../matching/matching.service.js";
+import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config.js";
 
-import { createEventService, updateEventService } from "../event/event.service";
+import { createEventService, updateEventService } from "../event/event.service.js";
 
 export const processEmail = async (email: EmailInput) => {
   if (!email) {

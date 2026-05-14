@@ -1,10 +1,10 @@
 import type { Request, Response } from "express";
-import { createEventService } from "./event.service";
+import { createEventService } from "./event.service.js";
 import {
   getEventsService,
   getEventByIdService,
   updateEventManuallyService,
-} from "./event.service";
+} from "./event.service.js";
 
 export const createEventController = async (req: Request, res: Response) => {
   try {

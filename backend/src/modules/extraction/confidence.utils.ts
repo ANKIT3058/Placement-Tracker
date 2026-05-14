@@ -1,4 +1,4 @@
-import type { VenueMeta } from "../email/email.parser";
+import type { VenueMeta } from "../email/email.parser.js";
 
 type ExtractionInput = {
   company: string | null;

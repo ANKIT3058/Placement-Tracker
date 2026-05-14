@@ -1,4 +1,4 @@
-import type { VenueMeta } from "../email/email.parser";
+import type { VenueMeta } from "../email/email.parser.js";
 
 export interface CreateEventInput {
   company: string;

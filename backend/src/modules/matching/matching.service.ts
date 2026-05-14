@@ -2,10 +2,10 @@ import {
   findByEventKey,
   findNearbyEvents,
   findByCompanyAndStage,
-} from "../event/event.repository";
+} from "../event/event.repository.js";
 
-import { generateEventKey } from "../event/event.utils";
-import { scoreEventMatch } from "./matching.utils";
+import { generateEventKey } from "../event/event.utils.js";
+import { scoreEventMatch } from "./matching.utils.js";
 
 export const matchEventV2 = async (data: {
   company: string;

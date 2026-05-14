@@ -1,5 +1,5 @@
-import { prisma } from "../../lib/prisma";
-import type { CreateEventInput } from "./event.types";
+import { prisma } from "../../lib/prisma.js";
+import type { CreateEventInput } from "./event.types.js";
 import { subDays, addDays } from "date-fns";
 
 type NearbyEventsInput = {

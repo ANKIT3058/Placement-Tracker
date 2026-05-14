@@ -1,12 +1,12 @@
 import OpenAI from "openai";
-import { extractData } from "../email/email.parser";
+import { extractData } from "../email/email.parser.js";
 import {
   mergeExtraction,
   getExtractionStatus,
   detectEstimatedTime,
-} from "./extraction.utils";
-import { saveExtraction } from "./extraction.repository";
-import { computeConfidence } from "./confidence.utils";
+} from "./extraction.utils.js";
+import { saveExtraction } from "./extraction.repository.js";
+import { computeConfidence } from "./confidence.utils.js";
 
 let client: OpenAI | null = null;
 

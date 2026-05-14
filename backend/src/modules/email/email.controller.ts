@@ -1,5 +1,5 @@
 import type { Request, Response } from "express";
-import { processEmail } from "./email.service";
+import { processEmail } from "./email.service.js";
 
 export const receiveEmailController = async (req: Request, res: Response) => {
   try {

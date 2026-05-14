@@ -1,12 +1,12 @@
-import { prisma } from "../../lib/prisma";
+import { prisma } from "../../lib/prisma.js";
 import {
   createEvent,
   updateEvent as updateEventRepo,
-} from "./event.repository";
+} from "./event.repository.js";
 
-import { generateEventKey } from "./event.utils";
-import { toUTCDate, toISTKey } from "../../shared/utils/date";
-import type { CreateEventInput } from "./event.types";
+import { generateEventKey } from "./event.utils.js";
+import { toUTCDate, toISTKey } from "../../shared/utils/date.js";
+import type { CreateEventInput } from "./event.types.js";
 
 // CREATE
 export const createEventService = async (data: CreateEventInput) => {

@@ -1,0 +1,49 @@
+import { createEventService } from "./event.service.js";
+import { getEventsService, getEventByIdService, updateEventManuallyService, } from "./event.service.js";
+export const createEventController = async (req, res) => {
+    try {
+        const event = await createEventService(req.body);
+        res.status(201).json(event);
+    }
+    catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Something went wrong" });
+    }
+};
+// GET /event?status=review
+export const getEventsController = async (req, res) => {
+    try {
+        const { status } = req.query;
+        const events = await getEventsService({
+            status: status,
+        });
+        res.json(events);
+    }
+    catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to fetch events" });
+    }
+};
+// GET /event/:id
+export const getEventByIdController = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const event = await getEventByIdService(Number(id));
+        res.json(event);
+    }
+    catch (error) {
+        res.status(500).json({ message: "Failed to fetch event" });
+    }
+};
+// PATCH /event/:id
+export const updateEventController = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updated = await updateEventManuallyService(Number(id), req.body);
+        res.json(updated);
+    }
+    catch (error) {
+        res.status(500).json({ message: "Failed to update event" });
+    }
+};
+//# sourceMappingURL=event.controller.js.map
