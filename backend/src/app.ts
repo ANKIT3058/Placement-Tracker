@@ -1,19 +1,16 @@
 import express from "express";
 import eventRoutes from "./modules/event/event.routes.js";
-import emailRoutes from "./modules/email/email.routes.js"
+import emailRoutes from "./modules/email/email.routes.js";
 import { prisma } from "./lib/prisma.js";
-import cors from 'cors';
+import cors from "cors";
 
 const app = express();
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://placement-tracker-vert.vercel.app/",
-    ],
+    origin: process.env.FRONTEND_URL,
     credentials: true,
-  })
+  }),
 );
 
 app.use(express.json());
