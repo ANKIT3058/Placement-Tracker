@@ -3,3 +3,7 @@ export interface EmailInput {
   body: string;
   sender: string;
 }
+
+export type EmailJobData = {
+  emailId: number;
+};

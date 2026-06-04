@@ -48,18 +48,42 @@ model EventUpdate {
   event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
 }
 
+model Email {
+  id Int @id @default(autoincrement())
+
+  subject String
+  body    String
+  sender  String
+
+  receivedAt DateTime @default(now())
+
+  processingStatus String  @default("pending")
+  failureReason    String?
+
+  createdAt DateTime @default(now())
+
+  extractions EmailExtraction[]
+}
+
 model EmailExtraction {
   id Int @id @default(autoincrement())
 
-  company         String?
-  stage           String?
-  date            DateTime?
-  time            String?
-  venue           String?
+  emailId Int
+
+  company String?
+  stage   String?
+  date    DateTime?
+  time    String?
+  venue   String?
+
   isTimeEstimated Boolean?
   status          String?
-  confidence      Float
-  rawText         String?
+
+  confidence Float
+
+  rawText String?
 
   createdAt DateTime @default(now())
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 }

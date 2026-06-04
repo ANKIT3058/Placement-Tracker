@@ -5,7 +5,6 @@ import {
   getExtractionStatus,
   detectEstimatedTime,
 } from "./extraction.utils.js";
-import { saveExtraction } from "./extraction.repository.js";
 import { computeConfidence } from "./confidence.utils.js";
 
 let client: OpenAI | null = null;
@@ -133,22 +132,10 @@ export const extract = async (text: string) => {
 
   finalConfidence = Math.max(0, confidence - penalty);
 
-  // SAVE TO DB
-  await saveExtraction({
-    company: merged.company,
-    stage: merged.stage,
-    date: merged.date ? new Date(merged.date) : null,
-    time: merged.time,
-    venue: merged.venue,
-    isTimeEstimated,
-    confidence: finalConfidence,
-    status,
-    rawText: text,
-  });
-
   return {
     data: merged,
     confidence: finalConfidence,
     status,
+    isTimeEstimated,
   };
 };

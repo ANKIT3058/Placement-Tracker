@@ -9,6 +9,15 @@ type NearbyEventsInput = {
 };
 
 export const createEvent = async (data: CreateEventInput, eventKey: string) => {
+  const existing = await prisma.event.findUnique({
+    where: {
+      eventKey,
+    },
+  });
+
+  if (existing) {
+    return existing;
+  }
   return prisma.event.create({
     data: {
       company: data.company,

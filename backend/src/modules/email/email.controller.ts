@@ -1,12 +1,36 @@
 import type { Request, Response } from "express";
-import { processEmail } from "./email.service.js";
+import { createEmail } from "./email.repository.js";
+import { enqueueEmailProcessing } from "./email.producer.js";
 
 export const receiveEmailController = async (req: Request, res: Response) => {
   try {
-    const result = await processEmail(req.body);
-    res.status(201).json({ ...result, venue: result?.venue ?? null });
+    const { subject, body, sender } = req.body;
+
+    if (!subject || !body || !sender) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields",
+      });
+    }
+
+    const savedEmail = await createEmail({
+      subject,
+      body,
+      sender,
+    });
+
+    await enqueueEmailProcessing(savedEmail.id);
+
+    return res.status(202).json({
+      success: true,
+      message: "Email queued for processing",
+    });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: "Email processing failed" });
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to process email",
+    });
   }
 };

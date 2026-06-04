@@ -3,16 +3,21 @@ import { cleanEmail } from "./email.parser.js";
 import { extract } from "../extraction/extraction.service.js";
 import { matchEventV2 } from "../matching/matching.service.js";
 import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config.js";
+import { createExtraction } from "../extraction/extraction.repository.js";
 
-import { createEventService, updateEventService } from "../event/event.service.js";
+import {
+  createEventService,
+  updateEventService,
+} from "../event/event.service.js";
 
-export const processEmail = async (email: EmailInput) => {
+export const processEmail = async (email: EmailInput, emailId: number) => {
   if (!email) {
     throw new Error("Email text is required");
   }
   const cleanText = cleanEmail(email.body).toLowerCase();
 
-  const { data, confidence } = await extract(cleanText);
+  const { data, confidence, status, isTimeEstimated } =
+    await extract(cleanText);
   const isLowConfidence = confidence < CONFIDENCE_THRESHOLD;
 
   console.log("CONFIDENCE FLOW:", {
@@ -24,6 +29,22 @@ export const processEmail = async (email: EmailInput) => {
   }
 
   const enrichedData = { ...data, confidence };
+  await createExtraction({
+    emailId,
+
+    company: enrichedData.company,
+    stage: enrichedData.stage,
+
+    date: enrichedData.date ? new Date(enrichedData.date) : undefined,
+    time: enrichedData.time,
+    venue: enrichedData.venue,
+
+    isTimeEstimated: isTimeEstimated,
+
+    confidence: enrichedData.confidence,
+
+    rawText: email.body,
+  });
 
   const matchResult = await matchEventV2(enrichedData);
 

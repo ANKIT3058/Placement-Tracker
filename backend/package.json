@@ -5,21 +5,27 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "worker:email": "tsx watch src/workers/email.worker.ts",
     "build": "prisma generate && tsc && node scripts/fix-esm-imports.js",
     "start": "node dist/src/server.js",
     "prisma:generate": "prisma generate",
-    "test": "jest"
+    "test": "jest",
+    "test:redis": "tsx src/infrastructure/redis/test.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@bull-board/api": "^7.1.5",
+    "@bull-board/express": "^7.1.5",
     "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^7.5.0",
+    "bullmq": "^5.77.1",
     "cors": "^2.8.6",
     "date-fns": "^4.1.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "ioredis": "^5.10.1",
     "openai": "^6.32.0",
     "pg": "^8.20.0"
   },
