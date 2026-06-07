@@ -87,3 +87,12 @@ model EmailExtraction {
 
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 }
+
+model GmailAccount {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  refreshToken String
+  historyId    String?
+  connectedAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+}

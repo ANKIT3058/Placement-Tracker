@@ -37,7 +37,7 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
 
     date: enrichedData.date ? new Date(enrichedData.date) : undefined,
     time: enrichedData.time,
-    venue: enrichedData.venue,
+    venue: enrichedData.venue,  
 
     isTimeEstimated: isTimeEstimated,
 

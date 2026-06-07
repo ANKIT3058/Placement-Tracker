@@ -41,7 +41,9 @@ export const AnyNull = runtime.AnyNull;
 export const ModelName = {
     Event: 'Event',
     EventUpdate: 'EventUpdate',
-    EmailExtraction: 'EmailExtraction'
+    Email: 'Email',
+    EmailExtraction: 'EmailExtraction',
+    GmailAccount: 'GmailAccount'
 };
 /*
  * Enums
@@ -75,8 +77,19 @@ export const EventUpdateScalarFieldEnum = {
     newValue: 'newValue',
     updatedAt: 'updatedAt'
 };
+export const EmailScalarFieldEnum = {
+    id: 'id',
+    subject: 'subject',
+    body: 'body',
+    sender: 'sender',
+    receivedAt: 'receivedAt',
+    processingStatus: 'processingStatus',
+    failureReason: 'failureReason',
+    createdAt: 'createdAt'
+};
 export const EmailExtractionScalarFieldEnum = {
     id: 'id',
+    emailId: 'emailId',
     company: 'company',
     stage: 'stage',
     date: 'date',
@@ -86,6 +99,14 @@ export const EmailExtractionScalarFieldEnum = {
     status: 'status',
     confidence: 'confidence',
     rawText: 'rawText',
+    createdAt: 'createdAt'
+};
+export const GmailAccountScalarFieldEnum = {
+    id: 'id',
+    email: 'email',
+    refreshToken: 'refreshToken',
+    historyId: 'historyId',
+    connectedAt: 'connectedAt',
     createdAt: 'createdAt'
 };
 export const SortOrder = {

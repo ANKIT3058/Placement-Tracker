@@ -1,6 +1,14 @@
 import { prisma } from "../../lib/prisma.js";
 import { subDays, addDays } from "date-fns";
 export const createEvent = async (data, eventKey) => {
+    const existing = await prisma.event.findUnique({
+        where: {
+            eventKey,
+        },
+    });
+    if (existing) {
+        return existing;
+    }
     return prisma.event.create({
         data: {
             company: data.company,

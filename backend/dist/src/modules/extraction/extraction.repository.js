@@ -1,7 +1,14 @@
 import { prisma } from "../../lib/prisma.js";
-export const saveExtraction = async (payload) => {
+export const createExtraction = async (data) => {
     return prisma.emailExtraction.create({
-        data: payload,
+        data,
+    });
+};
+export const getExtractionsForEmail = async (emailId) => {
+    return prisma.emailExtraction.findMany({
+        where: {
+            emailId,
+        },
     });
 };
 //# sourceMappingURL=extraction.repository.js.map

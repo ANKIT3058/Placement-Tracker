@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 import { extractData } from "../email/email.parser.js";
 import { mergeExtraction, getExtractionStatus, detectEstimatedTime, } from "./extraction.utils.js";
-import { saveExtraction } from "./extraction.repository.js";
 import { computeConfidence } from "./confidence.utils.js";
 let client = null;
 const getClient = () => {
@@ -113,22 +112,11 @@ export const extract = async (text) => {
     if (!merged.time)
         penalty += 0.1;
     finalConfidence = Math.max(0, confidence - penalty);
-    // SAVE TO DB
-    await saveExtraction({
-        company: merged.company,
-        stage: merged.stage,
-        date: merged.date ? new Date(merged.date) : null,
-        time: merged.time,
-        venue: merged.venue,
-        isTimeEstimated,
-        confidence: finalConfidence,
-        status,
-        rawText: text,
-    });
     return {
         data: merged,
         confidence: finalConfidence,
         status,
+        isTimeEstimated,
     };
 };
 //# sourceMappingURL=extraction.service.js.map

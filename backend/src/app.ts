@@ -1,6 +1,7 @@
 import express from "express";
 import eventRoutes from "./modules/event/event.routes.js";
 import emailRoutes from "./modules/email/email.routes.js";
+import gmailRoutes from "./modules/gmail/gmail.route.js";
 import { prisma } from "./lib/prisma.js";
 import cors from "cors";
 
@@ -42,6 +43,7 @@ app.get("/health", async (_, res) => {
 
 /* ---------------- API ROUTES ---------------- */
 
+app.use("/gmail", gmailRoutes);
 app.use("/event", eventRoutes);
 app.use("/email", emailRoutes);
 
