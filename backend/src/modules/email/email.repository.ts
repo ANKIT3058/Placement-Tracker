@@ -4,9 +4,18 @@ import type { EmailInput } from "./email.types.js";
 export const createEmail = async (email: EmailInput) => {
   return prisma.email.create({
     data: {
+      gmailMessageId: email.gmailMessageId,
       subject: email.subject,
       body: email.body,
       sender: email.sender,
+    },
+  });
+};
+
+export const getEmailByGmailMessageId = async (gmailMessageId: string) => {
+  return prisma.email.findUnique({
+    where: {
+      gmailMessageId,
     },
   });
 };

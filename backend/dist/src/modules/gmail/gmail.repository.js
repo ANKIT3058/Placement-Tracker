@@ -13,4 +13,11 @@ export const createGmailAccount = async (email, refreshToken) => {
         },
     });
 };
+export const getGmailAccount = async (email) => {
+    return prisma.gmailAccount.findUnique({
+        where: {
+            email,
+        },
+    });
+};
 //# sourceMappingURL=gmail.repository.js.map

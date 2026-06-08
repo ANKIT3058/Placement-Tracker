@@ -2,9 +2,17 @@ import { prisma } from "../../lib/prisma.js";
 export const createEmail = async (email) => {
     return prisma.email.create({
         data: {
+            gmailMessageId: email.gmailMessageId,
             subject: email.subject,
             body: email.body,
             sender: email.sender,
+        },
+    });
+};
+export const getEmailByGmailMessageId = async (gmailMessageId) => {
+    return prisma.email.findUnique({
+        where: {
+            gmailMessageId,
         },
     });
 };

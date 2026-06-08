@@ -3,8 +3,16 @@ import {
   generateAuthUrl,
   getTokens,
   getGmailAddress,
+  getRecentMessages,
+  getMessageDetails,
+  parseMessage,
 } from "./gmail.service.js";
-import { createGmailAccount } from "./gmail.repository.js";
+import { createGmailAccount, getGmailAccount } from "./gmail.repository.js";
+import {
+  createEmail,
+  getEmailByGmailMessageId,
+} from "../email/email.repository.js";
+import { enqueueEmailProcessing } from "../email/email.producer.js";
 
 export const gmailAuthController = (req: Request, res: Response) => {
   const url = generateAuthUrl();
@@ -49,4 +57,52 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
       message: "Failed to exchange code",
     });
   }
+};
+
+export const gmailSyncController = async (req: Request, res: Response) => {
+  const account = await getGmailAccount("ankitkumaranand68@gmail.com");
+
+  if (!account) {
+    return res.status(404).json({
+      success: false,
+    });
+  }
+
+  const messages = await getRecentMessages(account.refreshToken);
+
+  const firstMessage = messages[0];
+  const details = await getMessageDetails(
+    account.refreshToken,
+    firstMessage.id!,
+  );
+
+  const parsed = parseMessage(details);
+
+  if (parsed.messageId) {
+    const existing = await getEmailByGmailMessageId(parsed.messageId);
+
+    if (existing) {
+      return res.json({
+        success: true,
+        emailId: existing.id,
+        duplicate: true,
+        parsed,
+      });
+    }
+  }
+
+  const savedEmail = await createEmail({
+    gmailMessageId: parsed.messageId,
+    subject: parsed.subject ?? "",
+    body: parsed.body || parsed.snippet || "",
+    sender: parsed.sender ?? "",
+  });
+
+  await enqueueEmailProcessing(savedEmail.id);
+
+  return res.json({
+    success: true,
+    emailId: savedEmail.id,
+    parsed,
+  });
 };

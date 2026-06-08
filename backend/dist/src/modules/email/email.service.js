@@ -3,6 +3,8 @@ import { extract } from "../extraction/extraction.service.js";
 import { matchEventV2 } from "../matching/matching.service.js";
 import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config.js";
 import { createExtraction } from "../extraction/extraction.repository.js";
+import { updateEmailStatus } from "./email.repository.js";
+import { EMAIL_STATUS } from "../../shared/constants/email.constants.js";
 import { createEventService, updateEventService, } from "../event/event.service.js";
 export const processEmail = async (email, emailId) => {
     if (!email) {
@@ -14,9 +16,6 @@ export const processEmail = async (email, emailId) => {
     console.log("CONFIDENCE FLOW:", {
         extracted: confidence,
     });
-    if (!data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
-        throw new Error("Invalid date extracted");
-    }
     const enrichedData = { ...data, confidence };
     await createExtraction({
         emailId,
@@ -29,6 +28,10 @@ export const processEmail = async (email, emailId) => {
         confidence: enrichedData.confidence,
         rawText: email.body,
     });
+    if (!data.company || !data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+        await updateEmailStatus(emailId, EMAIL_STATUS.IGNORED);
+        return;
+    }
     const matchResult = await matchEventV2(enrichedData);
     if (isLowConfidence) {
         console.log("LOW CONFIDENCE DETECTED");
@@ -46,8 +49,12 @@ export const processEmail = async (email, emailId) => {
         });
     }
     if (matchResult && matchResult.event) {
-        return updateEventService(matchResult.event.id, matchResult.event, enrichedData);
+        const result = updateEventService(matchResult.event.id, matchResult.event, enrichedData);
+        await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+        return result;
     }
-    return createEventService(enrichedData);
+    const result = await createEventService(enrichedData);
+    await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+    return result;
 };
 //# sourceMappingURL=email.service.js.map

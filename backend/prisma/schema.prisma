@@ -49,7 +49,8 @@ model EventUpdate {
 }
 
 model Email {
-  id Int @id @default(autoincrement())
+  id             Int     @id @default(autoincrement())
+  gmailMessageId String? @unique
 
   subject String
   body    String

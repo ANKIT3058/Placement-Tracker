@@ -37,3 +37,89 @@ export const getGmailAddress = async (tokens: Credentials) => {
 
   return profile.data.emailAddress;
 };
+
+export const getRecentMessages = async (refreshToken: string) => {
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
+  });
+
+  const gmail = google.gmail({
+    version: "v1",
+    auth: oauth2Client,
+  });
+
+  const response = await gmail.users.messages.list({
+    userId: "me",
+    maxResults: 10,
+  });
+
+  return response.data.messages ?? [];
+};
+
+export const getMessageDetails = async (
+  refreshToken: string,
+  messageId: string,
+) => {
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
+  });
+
+  const gmail = google.gmail({
+    version: "v1",
+    auth: oauth2Client,
+  });
+
+  const response = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+  });
+
+  return response.data;
+};
+
+const getHeader = (
+  headers: { name?: string | null; value?: string | null }[],
+  name: string,
+) => {
+  return headers.find((header) => header.name === name)?.value;
+};
+
+const extractBody = (message: any): string => {
+  const payload = message.payload;
+
+  if (!payload) {
+    return "";
+  }
+
+  if (payload.body?.data) {
+    return Buffer.from(payload.body.data, "base64").toString("utf-8");
+  }
+
+  const textPart = payload.parts?.find(
+    (part: any) => part.mimeType === "text/plain",
+  );
+
+  if (textPart?.body?.data) {
+    return Buffer.from(textPart.body.data, "base64").toString("utf-8");
+  }
+
+  return "";
+};
+
+export const parseMessage = (message: any) => {
+  const headers = message.payload?.headers ?? [];
+
+  return {
+    messageId: message.id,
+
+    subject: getHeader(headers, "Subject"),
+
+    sender: getHeader(headers, "From"),
+
+    date: getHeader(headers, "Date"),
+
+    snippet: message.snippet,
+
+    body: extractBody(message),
+  };
+};

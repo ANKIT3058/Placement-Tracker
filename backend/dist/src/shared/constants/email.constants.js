@@ -3,5 +3,6 @@ export const EMAIL_STATUS = {
     PROCESSING: "processing",
     COMPLETED: "completed",
     FAILED: "failed",
+    IGNORED: "ignored",
 };
 //# sourceMappingURL=email.constants.js.map

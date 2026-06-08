@@ -17,3 +17,11 @@ export const createGmailAccount = async (
     },
   });
 };
+
+export const getGmailAccount = async (email: string) => {
+  return prisma.gmailAccount.findUnique({
+    where: {
+      email,
+    },
+  });
+};

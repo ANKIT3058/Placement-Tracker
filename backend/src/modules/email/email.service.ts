@@ -4,6 +4,8 @@ import { extract } from "../extraction/extraction.service.js";
 import { matchEventV2 } from "../matching/matching.service.js";
 import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config.js";
 import { createExtraction } from "../extraction/extraction.repository.js";
+import { updateEmailStatus } from "./email.repository.js";
+import { EMAIL_STATUS } from "../../shared/constants/email.constants.js";
 
 import {
   createEventService,
@@ -24,10 +26,6 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
     extracted: confidence,
   });
 
-  if (!data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
-    throw new Error("Invalid date extracted");
-  }
-
   const enrichedData = { ...data, confidence };
   await createExtraction({
     emailId,
@@ -37,7 +35,7 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
 
     date: enrichedData.date ? new Date(enrichedData.date) : undefined,
     time: enrichedData.time,
-    venue: enrichedData.venue,  
+    venue: enrichedData.venue,
 
     isTimeEstimated: isTimeEstimated,
 
@@ -45,6 +43,11 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
 
     rawText: email.body,
   });
+
+  if (!data.company || !data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+    await updateEmailStatus(emailId, EMAIL_STATUS.IGNORED);
+    return;
+  }
 
   const matchResult = await matchEventV2(enrichedData);
 
@@ -68,12 +71,18 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
   }
 
   if (matchResult && matchResult.event) {
-    return updateEventService(
+    const result = updateEventService(
       matchResult.event.id,
       matchResult.event,
       enrichedData,
     );
+
+    await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+
+    return result;
   }
 
-  return createEventService(enrichedData);
+  const result = await createEventService(enrichedData);
+  await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+  return result;
 };

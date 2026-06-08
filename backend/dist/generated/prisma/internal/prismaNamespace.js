@@ -107,6 +107,7 @@ export const EventUpdateScalarFieldEnum = {
 };
 export const EmailScalarFieldEnum = {
     id: 'id',
+    gmailMessageId: 'gmailMessageId',
     subject: 'subject',
     body: 'body',
     sender: 'sender',
