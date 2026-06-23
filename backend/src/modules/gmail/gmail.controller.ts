@@ -4,15 +4,9 @@ import {
   getTokens,
   getGmailAddress,
   getRecentMessages,
-  getMessageDetails,
-  parseMessage,
 } from "./gmail.service.js";
 import { createGmailAccount, getGmailAccount } from "./gmail.repository.js";
-import {
-  createEmail,
-  getEmailByGmailMessageId,
-} from "../email/email.repository.js";
-import { enqueueEmailProcessing } from "../email/email.producer.js";
+import { syncSingleMessage } from "./gmail.sync.service.js";
 
 export const gmailAuthController = (req: Request, res: Response) => {
   const url = generateAuthUrl();
@@ -70,39 +64,37 @@ export const gmailSyncController = async (req: Request, res: Response) => {
 
   const messages = await getRecentMessages(account.refreshToken);
 
-  const firstMessage = messages[0];
-  const details = await getMessageDetails(
-    account.refreshToken,
-    firstMessage.id!,
-  );
+  let processed = 0;
+  let duplicates = 0;
+  let queued = 0;
+  let failed = 0;
 
-  const parsed = parseMessage(details);
+  for (const message of messages) {
+    try {
+      if (!message.id) {
+        continue;
+      }
 
-  if (parsed.messageId) {
-    const existing = await getEmailByGmailMessageId(parsed.messageId);
+      const result = await syncSingleMessage(account.refreshToken, message.id);
 
-    if (existing) {
-      return res.json({
-        success: true,
-        emailId: existing.id,
-        duplicate: true,
-        parsed,
-      });
+      if (result.status === "duplicate") {
+        duplicates += 1;
+      } else {
+        processed += 1;
+        queued += 1;
+      }
+    } catch (error) {
+      failed += 1;
+      console.error(`Failed to sync message ${message.id}`, error);
     }
   }
 
-  const savedEmail = await createEmail({
-    gmailMessageId: parsed.messageId,
-    subject: parsed.subject ?? "",
-    body: parsed.body || parsed.snippet || "",
-    sender: parsed.sender ?? "",
-  });
-
-  await enqueueEmailProcessing(savedEmail.id);
-
   return res.json({
     success: true,
-    emailId: savedEmail.id,
-    parsed,
+    totalFetched: messages.length,
+    processed,
+    duplicates,
+    queued,
+    failed,
   });
 };
