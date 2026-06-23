@@ -60,7 +60,7 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
 };
 
 export const gmailSyncController = async (req: Request, res: Response) => {
-  const account = await getGmailAccount("ankitkumaranand68@gmail.com");
+  const account = await getGmailAccount("ankitanand3058@gmail.com");
 
   if (!account) {
     return res.status(404).json({

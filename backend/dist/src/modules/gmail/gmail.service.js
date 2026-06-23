@@ -53,17 +53,49 @@ export const getMessageDetails = async (refreshToken, messageId) => {
 const getHeader = (headers, name) => {
     return headers.find((header) => header.name === name)?.value;
 };
+const decodeBase64Url = (data) => {
+    return Buffer.from(data, "base64url").toString("utf-8");
+};
+const htmlToPlainText = (html) => {
+    return html
+        .replace(/<style[\s\S]*?<\/style>/gi, "")
+        .replace(/<script[\s\S]*?<\/script>/gi, "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&nbsp;/g, " ")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .trim();
+};
+const findBodyByMimeType = (part, mimeType) => {
+    if (!part || part.filename) {
+        return null;
+    }
+    if (part.mimeType === mimeType && part.body?.data) {
+        return decodeBase64Url(part.body.data);
+    }
+    for (const child of part.parts ?? []) {
+        const found = findBodyByMimeType(child, mimeType);
+        if (found) {
+            return found;
+        }
+    }
+    return null;
+};
 const extractBody = (message) => {
     const payload = message.payload;
     if (!payload) {
         return "";
     }
-    if (payload.body?.data) {
-        return Buffer.from(payload.body.data, "base64").toString("utf-8");
+    const plainText = findBodyByMimeType(payload, "text/plain");
+    if (plainText) {
+        return plainText;
     }
-    const textPart = payload.parts?.find((part) => part.mimeType === "text/plain");
-    if (textPart?.body?.data) {
-        return Buffer.from(textPart.body.data, "base64").toString("utf-8");
+    const html = findBodyByMimeType(payload, "text/html");
+    if (html) {
+        return htmlToPlainText(html);
     }
     return "";
 };
