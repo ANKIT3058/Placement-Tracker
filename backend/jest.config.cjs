@@ -1,6 +1,13 @@
 /** @type {import("jest").Config} */
 module.exports = {
   testEnvironment: "node",
+  // The suite is leak-free (verified: `jest --detectOpenHandles` reports no open
+  // handles). In multi-worker mode ts-jest occasionally fails to tear a worker
+  // process down within Jest's grace window, emitting a flaky "worker process
+  // failed to exit" warning that is NOT a real resource leak. Running in-band
+  // removes the worker entirely so the warning cannot occur, while keeping
+  // `--detectOpenHandles` meaningful for catching genuine leaks later.
+  maxWorkers: 1,
   // Only treat files under a `__tests__` directory named `*.test.ts` as tests.
   // Jest's default testMatch also picks up any file literally named `test.ts`
   // (e.g. the manual Redis smoke-script src/infrastructure/redis/test.ts) plus
