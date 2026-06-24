@@ -9,7 +9,7 @@ jest.mock("../../../lib/prisma", () => ({
 
 // mock extraction repository (prevents prisma import chain)
 jest.mock("../../extraction/extraction.repository", () => ({
-  saveExtraction: jest.fn(),
+  createExtraction: jest.fn(),
 }));
 
 // FIX: mock matching service.
@@ -50,9 +50,14 @@ describe("Email Service - Low Confidence Handling", () => {
       status: "review",
     });
 
-    const result = await processEmail({
-      body: "Amazon OA next week evening",
-    } as any);
+    // processEmail signature is (email, emailId); emailId is forwarded to
+    // createExtraction/updateEmailStatus, so a value must be supplied.
+    const result = await processEmail(
+      {
+        body: "Amazon OA next week evening",
+      } as any,
+      1,
+    );
 
     expect(eventService.createEventService).toHaveBeenCalledWith(
       expect.objectContaining({

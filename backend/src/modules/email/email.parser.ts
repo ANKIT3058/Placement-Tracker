@@ -202,7 +202,13 @@ export const extractVenue = (text: string): VenueMeta => {
     const isInvalidVenue =
       /will be|shared soon|tbd|tba|later|after\s+(the\s+)?ppt|to be\s+(shared|announced|communicated)|will share/i.test(value);
 
-    if (isInvalidVenue || value.length === 0) {
+    // Reject noise like "PFA seating plan" (please find attached / seating chart),
+    // which is attachment boilerplate rather than an actual venue.
+    const hasNoiseWord = VENUE_NOISE_WORDS.some((word) =>
+      new RegExp(`\\b${word}\\b`, "i").test(value),
+    );
+
+    if (isInvalidVenue || hasNoiseWord || value.length === 0) {
       return { value: null, isExplicit: true };
     }
 

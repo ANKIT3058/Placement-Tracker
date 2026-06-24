@@ -1,6 +1,19 @@
 /** @type {import("jest").Config} */
 module.exports = {
   testEnvironment: "node",
+  // Only treat files under a `__tests__` directory named `*.test.ts` as tests.
+  // Jest's default testMatch also picks up any file literally named `test.ts`
+  // (e.g. the manual Redis smoke-script src/infrastructure/redis/test.ts) plus
+  // their compiled copies under dist/. Scoping to src/ + __tests__ excludes both.
+  roots: ["<rootDir>/src"],
+  testMatch: ["**/__tests__/**/*.test.ts"],
+  // Production sources use ESM-style imports with explicit ".js" extensions
+  // (e.g. "../event/event.repository.js"), which are correct for the NodeNext
+  // runtime. ts-jest emits CommonJS for the test run and cannot resolve those
+  // extensions, so strip the trailing ".js" on relative imports at resolution.
+  moduleNameMapper: {
+    "^(\\.{1,2}/.*)\\.js$": "$1",
+  },
   transform: {
     // ts-jest must override the project tsconfig because tsconfig.json targets
     // "module": "ESNext" + "moduleResolution": "bundler" (correct for the app
