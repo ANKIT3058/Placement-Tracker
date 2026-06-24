@@ -25,3 +25,27 @@ export const getGmailAccount = async (email: string) => {
     },
   });
 };
+
+// Single-account model for now: pick whichever account is connected.
+export const getFirstGmailAccount = async () => {
+  return prisma.gmailAccount.findFirst();
+};
+
+export const getLatestConnectedGmailAccount = async () => {
+  return prisma.gmailAccount.findFirst({
+    orderBy: {
+      connectedAt: "desc",
+    },
+  });
+};
+
+export const updateHistoryId = async (email: string, historyId: string) => {
+  return prisma.gmailAccount.update({
+    where: {
+      email,
+    },
+    data: {
+      historyId,
+    },
+  });
+};

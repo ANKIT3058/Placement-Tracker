@@ -53,7 +53,7 @@ export const getRecentMessages = async (refreshToken: string) => {
 
   const response = await gmail.users.messages.list({
     userId: "me",
-    maxResults: 10,
+    maxResults: 100,
   });
 
   return response.data.messages ?? [];
@@ -78,6 +78,79 @@ export const getMessageDetails = async (
   });
 
   return response.data;
+};
+
+export const getLatestHistoryId = async (
+  refreshToken: string,
+): Promise<string> => {
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
+  });
+
+  const gmail = google.gmail({
+    version: "v1",
+    auth: oauth2Client,
+  });
+
+  const profile = await gmail.users.getProfile({
+    userId: "me",
+  });
+
+  const historyId = profile.data.historyId;
+
+  if (!historyId) {
+    throw new Error("Gmail profile did not return a historyId");
+  }
+
+  return historyId;
+};
+
+export const getHistoryChanges = async (
+  refreshToken: string,
+  startHistoryId: string,
+): Promise<{ messageIds: string[]; latestHistoryId: string }> => {
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
+  });
+
+  const gmail = google.gmail({
+    version: "v1",
+    auth: oauth2Client,
+  });
+
+  const messageIds = new Set<string>();
+  let latestHistoryId = startHistoryId;
+  let pageToken: string | undefined;
+
+  do {
+    const response = await gmail.users.history.list({
+      userId: "me",
+      startHistoryId,
+      historyTypes: ["messageAdded"],
+      pageToken,
+    });
+
+    if (response.data.historyId) {
+      latestHistoryId = response.data.historyId;
+    }
+
+    for (const record of response.data.history ?? []) {
+      for (const added of record.messagesAdded ?? []) {
+        const id = added.message?.id;
+
+        if (id) {
+          messageIds.add(id);
+        }
+      }
+    }
+
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return {
+    messageIds: [...messageIds],
+    latestHistoryId,
+  };
 };
 
 const getHeader = (
