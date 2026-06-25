@@ -31,6 +31,11 @@ export const getFirstGmailAccount = async () => {
   return prisma.gmailAccount.findFirst();
 };
 
+// Used by the background scheduler to sync every connected account.
+export const getAllGmailAccounts = async () => {
+  return prisma.gmailAccount.findMany();
+};
+
 export const getLatestConnectedGmailAccount = async () => {
   return prisma.gmailAccount.findFirst({
     orderBy: {
