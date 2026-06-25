@@ -6,6 +6,13 @@ export const matchEventV2 = async (data) => {
     const key = generateEventKey(data);
     const exact = await findByEventKey(key);
     if (exact) {
+        console.log({
+            company: data.company,
+            stage: data.stage,
+            date: data.date,
+            matchType: "exact",
+            confidence: 1.0,
+        });
         return { event: exact, matchType: "exact", confidence: 1.0 };
     }
     // 2. Soft match (confidence-aware)
@@ -31,6 +38,14 @@ export const matchEventV2 = async (data) => {
         }
         // threshold to avoid bad matches
         if (bestMatch && bestScore >= 0.5) {
+            console.log({
+                company: data.company,
+                stage: data.stage,
+                date: data.date,
+                matchType: "soft",
+                confidence: bestScore,
+                reason: bestReason,
+            });
             return {
                 event: bestMatch,
                 matchType: "soft",
@@ -45,8 +60,21 @@ export const matchEventV2 = async (data) => {
         stage: data.stage,
     });
     if (looseMatches.length === 1) {
+        console.log({
+            company: data.company,
+            stage: data.stage,
+            date: data.date,
+            matchType: "loose",
+            confidence: 0.6,
+        });
         return { event: looseMatches[0], matchType: "loose", confidence: 0.6 };
     }
+    console.log({
+        company: data.company,
+        stage: data.stage,
+        date: data.date,
+        matchType: "none",
+    });
     return null;
 };
 //# sourceMappingURL=matching.service.js.map

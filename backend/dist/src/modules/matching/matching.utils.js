@@ -15,6 +15,10 @@ export const scoreEventMatch = ({ event, incoming, }) => {
         dateScore = 0.7;
         reasons.push("Near date match (±1 day)");
     }
+    else if (diffDays <= 3) {
+        dateScore = 0.5;
+        reasons.push("Near date match (±3 days)");
+    }
     else {
         return { score: 0, reason: "Date too far" };
     }

@@ -6,6 +6,7 @@ jest.mock("../event.repository", () => ({
 import { detectChanges } from "../event.service";
 import { updateEventService } from "../event.service";
 import * as repo from "../event.repository";
+import { prisma } from "../../../lib/prisma";
 
 describe("Event Service - Venue Logic", () => {
   test("explicit null should clear venue", () => {
@@ -102,8 +103,9 @@ describe("Confidence Logic", () => {
       confidence: 0.9,
     };
 
-    // mock DB response
-    (repo.updateEvent as jest.Mock).mockResolvedValue({
+    // mock DB response: the event write now happens through the transaction
+    // client (tx.event.update), so stub prisma.event.update instead of the repo.
+    (prisma.event.update as jest.Mock).mockResolvedValue({
       ...existing,
       ...incoming,
     });
@@ -114,17 +116,17 @@ describe("Confidence Logic", () => {
       incoming as any,
     );
 
-    // ASSERT 1: repo was called
-    expect(repo.updateEvent).toHaveBeenCalled();
+    // ASSERT 1: the event was updated inside the transaction
+    expect(prisma.event.update).toHaveBeenCalled();
 
     // ASSERT 2: correct data passed
-    expect(repo.updateEvent).toHaveBeenCalledWith(
-      existing.id,
-      expect.objectContaining({
+    expect(prisma.event.update).toHaveBeenCalledWith({
+      where: { id: existing.id },
+      data: expect.objectContaining({
         time: "15:00",
         confidence: 0.9,
       }),
-    );
+    });
 
     // ASSERT 3: result updated
     expect(result.time).toBe("15:00");

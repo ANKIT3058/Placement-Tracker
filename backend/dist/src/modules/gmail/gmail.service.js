@@ -9,6 +9,8 @@ export const generateAuthUrl = () => {
 };
 export const getTokens = async (code) => {
     const { tokens } = await oauth2Client.getToken(code);
+    console.log("TOKENS");
+    console.log(tokens);
     return tokens;
 };
 export const getGmailAddress = async (tokens) => {
@@ -32,7 +34,7 @@ export const getRecentMessages = async (refreshToken) => {
     });
     const response = await gmail.users.messages.list({
         userId: "me",
-        maxResults: 10,
+        maxResults: 100,
     });
     return response.data.messages ?? [];
 };
@@ -49,6 +51,59 @@ export const getMessageDetails = async (refreshToken, messageId) => {
         id: messageId,
     });
     return response.data;
+};
+export const getLatestHistoryId = async (refreshToken) => {
+    oauth2Client.setCredentials({
+        refresh_token: refreshToken,
+    });
+    const gmail = google.gmail({
+        version: "v1",
+        auth: oauth2Client,
+    });
+    const profile = await gmail.users.getProfile({
+        userId: "me",
+    });
+    const historyId = profile.data.historyId;
+    if (!historyId) {
+        throw new Error("Gmail profile did not return a historyId");
+    }
+    return historyId;
+};
+export const getHistoryChanges = async (refreshToken, startHistoryId) => {
+    oauth2Client.setCredentials({
+        refresh_token: refreshToken,
+    });
+    const gmail = google.gmail({
+        version: "v1",
+        auth: oauth2Client,
+    });
+    const messageIds = new Set();
+    let latestHistoryId = startHistoryId;
+    let pageToken;
+    do {
+        const response = await gmail.users.history.list({
+            userId: "me",
+            startHistoryId,
+            historyTypes: ["messageAdded"],
+            pageToken,
+        });
+        if (response.data.historyId) {
+            latestHistoryId = response.data.historyId;
+        }
+        for (const record of response.data.history ?? []) {
+            for (const added of record.messagesAdded ?? []) {
+                const id = added.message?.id;
+                if (id) {
+                    messageIds.add(id);
+                }
+            }
+        }
+        pageToken = response.data.nextPageToken ?? undefined;
+    } while (pageToken);
+    return {
+        messageIds: [...messageIds],
+        latestHistoryId,
+    };
 };
 const getHeader = (headers, name) => {
     return headers.find((header) => header.name === name)?.value;
