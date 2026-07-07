@@ -2,7 +2,7 @@ import "dotenv/config";
 import { Worker } from "bullmq";
 import { redis } from "../../infrastructure/redis/redis.js";
 import { QUEUE_NAMES } from "../../shared/constants/queue.constants.js";
-import { processAttachmentJob } from "./attachment.service.js";
+import { documentProcessingService } from "./document-processing.service.js";
 import type { AttachmentJobData } from "./attachment.types.js";
 
 // Standalone worker process (run via `npm run worker:attachment`), mirroring
@@ -22,7 +22,7 @@ const worker = new Worker<AttachmentJobData>(
       attempts: job.attemptsMade,
     });
 
-    await processAttachmentJob(attachmentId);
+    await documentProcessingService.process(attachmentId);
   },
   {
     connection: redis,
