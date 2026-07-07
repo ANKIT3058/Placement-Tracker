@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import type { Credentials } from "google-auth-library";
+import type { AttachmentMetadata } from "../attachment/attachment.types.js";
 
 export const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -220,6 +221,35 @@ const extractBody = (message: any): string => {
   return "";
 };
 
+// Walk the MIME tree and collect metadata for every part that is a real
+// attachment (has a filename AND a Gmail attachmentId). Inline body parts
+// (text/plain, text/html) have no attachmentId and are skipped. Only metadata
+// is captured here — the bytes are downloaded later by the attachment worker.
+const collectAttachments = (payload: any): AttachmentMetadata[] => {
+  const attachments: AttachmentMetadata[] = [];
+
+  const walk = (part: any) => {
+    if (!part) return;
+
+    if (part.filename && part.body?.attachmentId) {
+      attachments.push({
+        gmailAttachmentId: part.body.attachmentId,
+        filename: part.filename,
+        mimeType: part.mimeType ?? "application/octet-stream",
+        size: typeof part.body.size === "number" ? part.body.size : null,
+      });
+    }
+
+    for (const child of part.parts ?? []) {
+      walk(child);
+    }
+  };
+
+  walk(payload);
+
+  return attachments;
+};
+
 export const parseMessage = (message: any) => {
   const headers = message.payload?.headers ?? [];
 
@@ -235,5 +265,41 @@ export const parseMessage = (message: any) => {
     snippet: message.snippet,
 
     body: extractBody(message),
+
+    attachments: collectAttachments(message.payload),
   };
+};
+
+// Download a single attachment's bytes from Gmail. Kept alongside the other
+// Gmail API helpers so all googleapis usage stays in one module and no extra
+// OAuth client is created elsewhere.
+export const getAttachmentData = async (
+  refreshToken: string,
+  messageId: string,
+  attachmentId: string,
+): Promise<Buffer> => {
+  oauth2Client.setCredentials({
+    refresh_token: refreshToken,
+  });
+
+  const gmail = google.gmail({
+    version: "v1",
+    auth: oauth2Client,
+  });
+
+  const response = await gmail.users.messages.attachments.get({
+    userId: "me",
+    messageId,
+    id: attachmentId,
+  });
+
+  const data = response.data.data;
+
+  if (!data) {
+    throw new Error(
+      `Gmail returned no data for attachment ${attachmentId} on message ${messageId}`,
+    );
+  }
+
+  return Buffer.from(data, "base64url");
 };

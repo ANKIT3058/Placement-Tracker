@@ -2,12 +2,30 @@ import { prisma } from "../../lib/prisma.js";
 import type { EmailInput } from "./email.types.js";
 
 export const createEmail = async (email: EmailInput) => {
+  const attachments = email.attachments ?? [];
+
+  // Nested create runs the Email insert and all Attachment inserts inside a
+  // single implicit Prisma transaction — either the email and its attachment
+  // metadata all persist, or none do. Duplicate emails are guarded upstream in
+  // the sync flow (existing gmailMessageId short-circuits before create), so
+  // attachment metadata is never inserted twice.
   return prisma.email.create({
     data: {
       gmailMessageId: email.gmailMessageId,
+      gmailAccountId: email.gmailAccountId,
       subject: email.subject,
       body: email.body,
       sender: email.sender,
+      attachments: attachments.length
+        ? {
+            create: attachments.map((attachment) => ({
+              gmailAttachmentId: attachment.gmailAttachmentId,
+              filename: attachment.filename,
+              mimeType: attachment.mimeType,
+              size: attachment.size,
+            })),
+          }
+        : undefined,
     },
   });
 };

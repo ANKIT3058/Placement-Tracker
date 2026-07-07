@@ -52,6 +52,11 @@ model Email {
   id             Int     @id @default(autoincrement())
   gmailMessageId String? @unique
 
+  // The Gmail account that synced this email. Optional so pre-existing rows
+  // (synced before accounts were tracked) remain valid; every newly synced
+  // email always stores its originating account.
+  gmailAccountId Int?
+
   subject String
   body    String
   sender  String
@@ -63,7 +68,35 @@ model Email {
 
   createdAt DateTime @default(now())
 
-  extractions EmailExtraction[]
+  gmailAccount GmailAccount?     @relation(fields: [gmailAccountId], references: [id])
+  extractions  EmailExtraction[]
+  attachments  Attachment[]
+
+  @@index([gmailAccountId])
+}
+
+model Attachment {
+  id                Int     @id @default(autoincrement())
+  emailId           Int
+  gmailAttachmentId String
+  filename          String
+  mimeType          String
+  size              Int?
+
+  storagePath String?
+
+  // Full processing lifecycle (download + future parsing/extraction), not just
+  // download: pending -> processing -> completed | failed.
+  processingStatus String    @default("pending")
+  processingError  String?
+  processedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+
+  @@index([emailId])
 }
 
 model EmailExtraction {
@@ -96,4 +129,6 @@ model GmailAccount {
   historyId    String?
   connectedAt  DateTime @default(now())
   createdAt    DateTime @default(now())
+
+  emails Email[]
 }

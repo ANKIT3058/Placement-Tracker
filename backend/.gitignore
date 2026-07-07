@@ -3,3 +3,6 @@ node_modules
 .env
 
 /generated/prisma
+
+# Downloaded email attachments (local storage backend)
+/storage

@@ -17,10 +17,10 @@ export type SyncMessageResult =
   | { status: "created"; emailId: number };
 
 export const syncSingleMessage = async (
-  refreshToken: string,
+  account: SyncableAccount,
   gmailMessageId: string,
 ): Promise<SyncMessageResult> => {
-  const details = await getMessageDetails(refreshToken, gmailMessageId);
+  const details = await getMessageDetails(account.refreshToken, gmailMessageId);
 
   const parsed = parseMessage(details);
 
@@ -32,11 +32,16 @@ export const syncSingleMessage = async (
     }
   }
 
+  // Record the originating Gmail account so the attachment worker can later
+  // resolve the correct refreshToken via Attachment -> Email -> GmailAccount,
+  // instead of guessing with getFirstGmailAccount().
   const savedEmail = await createEmail({
     gmailMessageId: parsed.messageId,
+    gmailAccountId: account.id,
     subject: parsed.subject ?? "",
     body: parsed.body || parsed.snippet || "",
     sender: parsed.sender ?? "",
+    attachments: parsed.attachments,
   });
 
   await enqueueEmailProcessing(savedEmail.id);
@@ -61,6 +66,7 @@ export type SyncAccountResult = {
 // Minimal shape required to sync an account, so callers (controller and
 // scheduler) can pass a Prisma GmailAccount without coupling to its full type.
 export type SyncableAccount = {
+  id: number;
   email: string;
   refreshToken: string;
   historyId: string | null;
@@ -81,7 +87,7 @@ const isHistoryIdExpired = (error: unknown): boolean => {
 };
 
 const processMessages = async (
-  refreshToken: string,
+  account: SyncableAccount,
   messageIds: string[],
 ): Promise<SyncStats> => {
   let processed = 0;
@@ -91,7 +97,7 @@ const processMessages = async (
 
   for (const messageId of messageIds) {
     try {
-      const result = await syncSingleMessage(refreshToken, messageId);
+      const result = await syncSingleMessage(account, messageId);
 
       if (result.status === "duplicate") {
         duplicates += 1;
@@ -126,7 +132,7 @@ export const syncGmailAccount = async (
       .map((message) => message.id)
       .filter((id): id is string => Boolean(id));
 
-    const stats = await processMessages(refreshToken, messageIds);
+    const stats = await processMessages(account, messageIds);
 
     return {
       mode: "full",
@@ -147,7 +153,7 @@ export const syncGmailAccount = async (
         account.historyId,
       );
 
-      const stats = await processMessages(refreshToken, messageIds);
+      const stats = await processMessages(account, messageIds);
 
       result = {
         mode: "incremental",

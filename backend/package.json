@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "worker:email": "tsx watch src/workers/email.worker.ts",
+    "worker:attachment": "tsx watch src/modules/attachment/attachment.worker.ts",
     "build": "prisma generate && tsc && node scripts/fix-esm-imports.js",
     "start": "node dist/src/server.js",
     "prisma:generate": "prisma generate",
