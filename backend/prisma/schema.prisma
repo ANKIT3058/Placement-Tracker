@@ -91,6 +91,15 @@ model Attachment {
   processingError  String?
   processedAt      DateTime?
 
+  // Parsed document results, populated by DocumentProcessingService when a
+  // parser handles this attachment's MIME type. Independent of download status:
+  // a parse failure records `parsingError` but leaves the attachment completed.
+  text           String? // normalized extracted text
+  parsedData     Json? // structured parser output (e.g. future Excel rows)
+  parsedMetadata Json? // parser-specific metadata (e.g. PDF page count)
+  parsedAt       DateTime? // successful parse time
+  parsingError   String? // parse failure reason (download still succeeded)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

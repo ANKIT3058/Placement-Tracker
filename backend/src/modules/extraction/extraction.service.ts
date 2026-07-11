@@ -9,7 +9,10 @@ import { computeConfidence } from "./confidence.utils.js";
 
 let client: OpenAI | null = null;
 
-const getClient = () => {
+// Lazily construct and memoize the single shared OpenAI client. Exported so
+// other AI features (e.g. the DocumentClassifier) reuse the exact same provider
+// instance and API-key handling instead of standing up a second client.
+export const getOpenAIClient = () => {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY not set");
   }
@@ -23,7 +26,7 @@ const getClient = () => {
 };
 
 export const extractWithAI = async (text: string) => {
-  const openai = getClient();
+  const openai = getOpenAIClient();
   const response = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [

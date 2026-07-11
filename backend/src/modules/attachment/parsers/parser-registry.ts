@@ -1,6 +1,6 @@
 import type { AttachmentParser } from "./attachment-parser.interface.js";
 import { PdfParser } from "./pdf.parser.js";
-import { ExcelParser } from "./excel.parser.js";
+import { SpreadsheetParser } from "./spreadsheet.parser.js";
 
 // Central lookup that maps a document's MIME type to a parser. This is the ONLY
 // place in the module that knows which parser handles which format, keeping the
@@ -24,5 +24,5 @@ export class ParserRegistry {
 // changes.
 export const parserRegistry = new ParserRegistry([
   new PdfParser(),
-  new ExcelParser(),
+  new SpreadsheetParser(),
 ]);

@@ -14,6 +14,8 @@ import {
   markAttachmentCompleted,
   markAttachmentProcessing,
   markAttachmentFailed,
+  updateParsedResult,
+  markParsingFailed,
 } from "./attachment.repository.js";
 import { ATTACHMENT_STATUS } from "./attachment.types.js";
 
@@ -39,10 +41,11 @@ const buildStorageKey = (filename: string): string => {
 // selection is delegated to the registry, so this service contains NO
 // MIME-type-specific logic and never changes when a new format is added.
 //
-// Parsing is not wired up yet (parsers are placeholders that throw). Today the
-// service behaves exactly as before: it downloads the file, stores it, and marks
-// the attachment completed. The parse/persist seams are in place for future
-// sprints.
+// A parser runs when the registry has one for the MIME type (e.g. PDF) and its
+// result is persisted via the repository. Download and parsing are separate
+// failure domains: a download failure marks the attachment failed (retryable),
+// while a parse failure leaves the attachment completed and only records a
+// parsingError. Unsupported formats skip parsing entirely.
 export class DocumentProcessingService {
   private readonly storage: StorageService;
   private readonly registry: ParserRegistry;
@@ -99,25 +102,33 @@ export class DocumentProcessingService {
 
     await markAttachmentProcessing(attachmentId);
 
+    let storagePath: string;
     try {
-      const storagePath = await this.downloadAttachment(
+      storagePath = await this.downloadAttachment(
         attachment,
         account.refreshToken,
         messageId,
       );
-
-      const parser = this.selectParser(attachment.mimeType);
-      const parsed = await this.parseDocument(parser, storagePath);
-
-      await this.persistResult(attachmentId, storagePath, parsed);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
 
       await markAttachmentFailed(attachmentId, message);
 
       // Rethrow so BullMQ records the failure and retries per the queue's
-      // backoff policy.
+      // backoff policy. Download failures are retryable (e.g. transient Gmail
+      // errors).
       throw error;
+    }
+
+    // Download succeeded — the attachment is completed regardless of whether
+    // parsing follows or succeeds. Marking it here ensures a later parse failure
+    // never flips the download status back to failed.
+    await markAttachmentCompleted(attachmentId, storagePath, new Date());
+
+    // Best-effort parsing. Unsupported formats have no parser and are skipped.
+    const parser = this.selectParser(attachment.mimeType);
+    if (parser) {
+      await this.parseAndPersist(attachmentId, storagePath, parser);
     }
   }
 
@@ -144,34 +155,27 @@ export class DocumentProcessingService {
     return this.registry.findParser(mimeType);
   }
 
-  // Parse the downloaded document into the normalized ParsedAttachment shape.
+  // Parse the downloaded document and persist the result via the repository.
   //
-  // Parsing is deferred: the parser implementations are placeholders that throw
-  // "Not implemented", so we do not invoke `parser.parse()` yet — doing so would
-  // break today's download-only behavior. When a format's parser is implemented,
-  // this method invokes it here; unsupported formats (no parser) simply skip
-  // parsing and are still considered successfully processed.
-  private async parseDocument(
-    parser: AttachmentParser | undefined,
-    _storagePath: string,
-  ): Promise<ParsedAttachment | undefined> {
-    if (!parser) {
-      return undefined;
-    }
-
-    // Future sprint: `return parser.parse(_storagePath);`
-    return undefined;
-  }
-
-  // Record the outcome. Storing parsed content has no schema yet, so for now
-  // this only records the stored file path and completion — identical to the
-  // pre-framework behavior.
-  private async persistResult(
+  // Parsing is best-effort and isolated from the download lifecycle: a parse
+  // failure is recorded as a parsingError (the attachment stays completed) and
+  // is NOT rethrown — parse errors are typically deterministic, so retrying the
+  // whole job would only re-download the file without helping.
+  private async parseAndPersist(
     attachmentId: number,
     storagePath: string,
-    _parsed: ParsedAttachment | undefined,
+    parser: AttachmentParser,
   ): Promise<void> {
-    await markAttachmentCompleted(attachmentId, storagePath, new Date());
+    let parsed: ParsedAttachment;
+    try {
+      parsed = await parser.parse(storagePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      await markParsingFailed(attachmentId, message);
+      return;
+    }
+
+    await updateParsedResult(attachmentId, parsed, new Date());
   }
 }
 
