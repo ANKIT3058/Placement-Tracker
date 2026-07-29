@@ -1,4 +1,4 @@
-import { getOpenAIClient } from "../../extraction/extraction.service.js";
+import { structuredCompletion, RetryPolicy } from "../../ai/index.js";
 import type { ParsedAttachment } from "../../attachment/parsers/parsed-attachment.types.js";
 import { DOCUMENT_TYPE, type DocumentType } from "../document-type.js";
 import type { ClassificationResult } from "./classification-result.types.js";
@@ -31,14 +31,19 @@ interface RawClassification {
   summary?: unknown;
 }
 
+// Single attempt, no backoff. Classification previously made exactly one
+// provider call and degraded any failure to UNKNOWN_RESULT; disabling the AI
+// Core's default retries preserves that behaviour identically.
+const NO_RETRY = new RetryPolicy({ maxAttempts: 1 });
+
 // Determines the semantic type of a parsed placement document. It ONLY decides
 // the DocumentType, summarizes it and scores its confidence — it does not
 // extract event fields or participants, modify events, or persist anything. Its
 // output is meant to later route a document to a specialized extractor.
 //
-// It reuses the shared OpenAI client from the extraction module rather than
-// constructing its own, so provider setup and API-key handling live in one
-// place.
+// It talks to the model through the shared AI Core (structuredCompletion)
+// rather than constructing requests itself, so provider setup, code-fence
+// stripping, and JSON parsing all live in one place.
 export class DocumentClassifier {
   // Classify a parsed document. Always resolves to a ClassificationResult;
   // any failure degrades gracefully to UNKNOWN / confidence 0 / empty summary.
@@ -60,33 +65,18 @@ export class DocumentClassifier {
     }
   }
 
-  // Send the document to the shared AI provider and return its parsed JSON.
-  private async requestClassification(
-    text: string,
-  ): Promise<RawClassification> {
-    const openai = getOpenAIClient();
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: CLASSIFICATION_SYSTEM_PROMPT },
-        { role: "user", content: buildClassificationUserPrompt(text) },
-      ],
-      temperature: 0,
+  // Send the document to the shared AI Core and return its parsed JSON. The
+  // provider interaction (client, request, fence-stripping, JSON parsing) now
+  // lives in the AI Core; prompt, model, and temperature are unchanged.
+  private requestClassification(text: string): Promise<RawClassification> {
+    return structuredCompletion<RawClassification>({
+      systemPrompt: CLASSIFICATION_SYSTEM_PROMPT,
+      userPrompt: buildClassificationUserPrompt(text),
+      // Preserve the exact model + temperature this service used before the AI
+      // Core existed, independent of the Core's (possibly evolving) defaults.
+      model: { model: "gpt-4o-mini", temperature: 0 },
+      retryPolicy: NO_RETRY,
     });
-
-    const content = response.choices?.[0]?.message?.content;
-
-    if (!content) {
-      throw new Error("Empty response from OpenAI");
-    }
-
-    const cleanContent = content
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
-
-    return JSON.parse(cleanContent) as RawClassification;
   }
 
   // Coerce the model's loosely-typed output into a valid ClassificationResult.

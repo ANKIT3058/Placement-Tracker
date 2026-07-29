@@ -6,6 +6,7 @@ import {
   detectEstimatedTime,
 } from "./extraction.utils.js";
 import { computeConfidence } from "./confidence.utils.js";
+import { structuredCompletion, RetryPolicy } from "../ai/index.js";
 
 let client: OpenAI | null = null;
 
@@ -25,14 +26,29 @@ export const getOpenAIClient = () => {
   return client;
 };
 
-export const extractWithAI = async (text: string) => {
-  const openai = getOpenAIClient();
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: `
+// The structured JSON shape the extraction prompt asks the model to return.
+// This is a compile-time assertion about the parsed JSON, not a runtime
+// contract — the AI Core validates that the response IS JSON, while the
+// business-level validation and normalization stay in `extract` /
+// `mergeExtraction` below, exactly as before.
+interface AIExtraction {
+  company?: string;
+  stage?: string;
+  date?: string;
+  time?: string | null;
+  venue?: string | null;
+}
+
+// Single attempt, no backoff. The prior implementation made exactly one
+// provider call and let `extract` fall back to regex on any failure; disabling
+// the AI Core's default retries preserves that behaviour identically.
+const NO_RETRY = new RetryPolicy({ maxAttempts: 1 });
+
+export const extractWithAI = async (text: string): Promise<AIExtraction> => {
+  // Provider interaction (client, request, fence-stripping, JSON parsing) now
+  // lives in the AI Core. Prompt, model, and temperature are unchanged.
+  return structuredCompletion<AIExtraction>({
+    systemPrompt: `
 You are an information extraction system.
 
 Extract structured data from placement emails.
@@ -61,31 +77,12 @@ Return STRICT JSON only:
   "venue": string | null
 }
 `,
-      },
-      {
-        role: "user",
-        content: text,
-      },
-    ],
-    temperature: 0,
+    userPrompt: text,
+    // Preserve the exact model + temperature this service used before the AI
+    // Core existed, independent of the Core's (possibly evolving) defaults.
+    model: { model: "gpt-4o-mini", temperature: 0 },
+    retryPolicy: NO_RETRY,
   });
-
-  const content = response.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("Empty response from OpenAI");
-  }
-
-  const cleanContent = content
-    .replace(/```json/g, "")
-    .replace(/```/g, "")
-    .trim();
-
-  try {
-    return JSON.parse(cleanContent);
-  } catch {
-    throw new Error("Invalid JSON from OpenAI");
-  }
 };
 
 export const extract = async (text: string) => {

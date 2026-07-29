@@ -6,6 +6,7 @@ import {
 
 import { generateEventKey } from "../event/event.utils.js";
 import { scoreEventMatch } from "./matching.utils.js";
+import { LOOSE_MATCH_WINDOW_DAYS } from "../../shared/constants/config.js";
 
 export const matchEventV2 = async (data: {
   company: string;
@@ -72,10 +73,13 @@ export const matchEventV2 = async (data: {
     }
   }
 
-  // 3. Loose match
+  // 3. Loose match (bounded: uniqueness only implies identity within a plausible
+  // date range — see LOOSE_MATCH_WINDOW_DAYS)
   const looseMatches = await findByCompanyAndStage({
     company: data.company,
     stage: data.stage,
+    date: data.date,
+    windowDays: LOOSE_MATCH_WINDOW_DAYS,
   });
 
   if (looseMatches.length === 1) {
