@@ -22,6 +22,31 @@ export const updateEventService = async (
   existing: any,
   incoming: CreateEventInput,
 ) => {
+  // MANUAL AUTHORITY (AC-3 / D-9).
+  //
+  // A human decision is the highest authority in the system, and `confirmed` is
+  // the state that records one. Automated inference may not revise a confirmed
+  // Event at all — not even when its confidence is equal or higher.
+  //
+  // The guard is on status rather than on the confidence comparison below,
+  // because authority is categorical and confidence is a quantity. Manual
+  // confirmation sets confidence to exactly 1.0, and a maximally-confident
+  // extraction also reaches 1.0, so the incumbent comparator cannot tell "a
+  // person settled this" apart from "the extractor was very sure". Tightening
+  // that comparator to `<=` would express the same intent as a numeric
+  // coincidence and would additionally reject equal-confidence automated
+  // updates between two inferences, which is unrelated behaviour. It is left
+  // untouched.
+  //
+  // This is the only automated write path to an Event, so this is the only
+  // place the guard is needed. `updateEventManuallyService` is the human path
+  // and is deliberately not affected.
+  if (existing.status === "confirmed") {
+    console.log("Skipping update: event is confirmed by a human");
+
+    return existing;
+  }
+
   const { changes, isRescheduled } = detectChanges(existing, incoming);
 
   if (changes.length === 0) {

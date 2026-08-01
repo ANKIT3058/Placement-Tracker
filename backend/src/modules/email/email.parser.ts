@@ -77,6 +77,23 @@ export const resolveDate = (text: string): Date | null => {
 };
 
 // ---------------- COMPANY ----------------
+
+// The placeholder `extractCompany` and `extractData` substitute when no company
+// can be resolved. It records extraction failure; it is not the name of any
+// organisation, so nothing downstream may treat it as a company value.
+//
+// (`extractStage` uses the same spelling for its own unresolved round. They are
+// separate sentinels for separate attributes that happen to read alike.)
+export const UNRESOLVED_COMPANY = "unknown";
+
+// Whether an extracted company is a real value rather than the placeholder.
+// The viability gate uses this so an unresolved company is treated as a missing
+// company, which is what the Decision Model already specifies for it.
+export const isResolvedCompany = (company: unknown): company is string =>
+  typeof company === "string" &&
+  company.trim().length > 0 &&
+  company.trim().toLowerCase() !== UNRESOLVED_COMPANY;
+
 export const extractCompany = (text: string): string => {
   const lowerText = text.toLowerCase();
 

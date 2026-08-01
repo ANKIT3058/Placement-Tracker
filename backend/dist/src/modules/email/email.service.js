@@ -1,4 +1,4 @@
-import { cleanEmail } from "./email.parser.js";
+import { cleanEmail, isResolvedCompany } from "./email.parser.js";
 import { extract } from "../extraction/extraction.service.js";
 import { matchEventV2 } from "../matching/matching.service.js";
 import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config.js";
@@ -28,7 +28,23 @@ export const processEmail = async (email, emailId) => {
         confidence: enrichedData.confidence,
         rawText: email.body,
     });
-    if (!data.company || !data.date || !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
+    // VIABILITY GATE (AC-4 / D-10).
+    //
+    // An observation without identity anchors cannot be reasoned about, so it is
+    // abandoned rather than guessed at. `isResolvedCompany` is used instead of a
+    // truthiness check because extraction substitutes the literal "unknown" when
+    // no company is found, and that string is truthy — it previously satisfied
+    // this gate, created a real Event named "unknown", and that Event then became
+    // a matching candidate for every later unresolved observation.
+    //
+    // Treating the placeholder as a missing company is what the Decision Model
+    // already specifies for this case; no new outcome is introduced. Abandoning
+    // here is also what keeps the placeholder out of the identity key, out of the
+    // candidate queries, and out of the database — the gate runs before any of
+    // them.
+    if (!isResolvedCompany(data.company) ||
+        !data.date ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(data.date)) {
         await updateEmailStatus(emailId, EMAIL_STATUS.IGNORED);
         return;
     }
