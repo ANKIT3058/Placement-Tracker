@@ -1,6 +1,16 @@
 node_modules
-# Keep environment variables out of version control
+# Keep environment variables out of version control.
+# .env.example is deliberately NOT ignored — it is the template, and carries
+# placeholders only.
 .env
+
+# Compiled Prisma CLI config. The CLI loads prisma.config.ts directly, so these
+# emitted files are redundant; they are ignored because a committed copy is how
+# a datasource credential previously reached version control.
+prisma.config.js
+prisma.config.js.map
+prisma.config.d.ts
+prisma.config.d.ts.map
 
 /generated/prisma
 

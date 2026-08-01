@@ -76,11 +76,21 @@ export const findNearbyEvents = async ({ company, date, windowDays, }) => {
         },
     });
 };
-export const findByCompanyAndStage = async ({ company, stage, }) => {
+// Candidates for the loose recognition tier. `date` and `windowDays` are
+// required: an unbounded company+stage lookup lets that tier match events months
+// apart, which the update path then applies as a reschedule (AC-1 / D-2). Making
+// the bound part of the signature stops a caller reintroducing the unbounded
+// query by omission.
+export const findByCompanyAndStage = async ({ company, stage, date, windowDays, }) => {
+    const parsedDate = new Date(date);
     return prisma.event.findMany({
         where: {
             company: company,
             stage: stage,
+            date: {
+                gte: subDays(parsedDate, windowDays),
+                lte: addDays(parsedDate, windowDays),
+            },
         },
     });
 };

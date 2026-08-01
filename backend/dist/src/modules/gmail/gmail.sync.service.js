@@ -2,8 +2,8 @@ import { getMessageDetails, parseMessage, getLatestHistoryId, getRecentMessages,
 import { createEmail, getEmailByGmailMessageId, } from "../email/email.repository.js";
 import { enqueueEmailProcessing } from "../email/email.producer.js";
 import { updateHistoryId } from "./gmail.repository.js";
-export const syncSingleMessage = async (refreshToken, gmailMessageId) => {
-    const details = await getMessageDetails(refreshToken, gmailMessageId);
+export const syncSingleMessage = async (account, gmailMessageId) => {
+    const details = await getMessageDetails(account.refreshToken, gmailMessageId);
     const parsed = parseMessage(details);
     if (parsed.messageId) {
         const existing = await getEmailByGmailMessageId(parsed.messageId);
@@ -11,11 +11,16 @@ export const syncSingleMessage = async (refreshToken, gmailMessageId) => {
             return { status: "duplicate", emailId: existing.id };
         }
     }
+    // Record the originating Gmail account so the attachment worker can later
+    // resolve the correct refreshToken via Attachment -> Email -> GmailAccount,
+    // instead of guessing with getFirstGmailAccount().
     const savedEmail = await createEmail({
         gmailMessageId: parsed.messageId,
+        gmailAccountId: account.id,
         subject: parsed.subject ?? "",
         body: parsed.body || parsed.snippet || "",
         sender: parsed.sender ?? "",
+        attachments: parsed.attachments,
     });
     await enqueueEmailProcessing(savedEmail.id);
     return { status: "created", emailId: savedEmail.id };
@@ -26,14 +31,14 @@ const isHistoryIdExpired = (error) => {
         candidate?.status === 404 ||
         candidate?.response?.status === 404);
 };
-const processMessages = async (refreshToken, messageIds) => {
+const processMessages = async (account, messageIds) => {
     let processed = 0;
     let duplicates = 0;
     let queued = 0;
     let failed = 0;
     for (const messageId of messageIds) {
         try {
-            const result = await syncSingleMessage(refreshToken, messageId);
+            const result = await syncSingleMessage(account, messageId);
             if (result.status === "duplicate") {
                 duplicates += 1;
             }
@@ -61,7 +66,7 @@ export const syncGmailAccount = async (account) => {
         const messageIds = messages
             .map((message) => message.id)
             .filter((id) => Boolean(id));
-        const stats = await processMessages(refreshToken, messageIds);
+        const stats = await processMessages(account, messageIds);
         return {
             mode: "full",
             totalFetched: messages.length,
@@ -76,7 +81,7 @@ export const syncGmailAccount = async (account) => {
     else {
         try {
             const { messageIds, latestHistoryId } = await getHistoryChanges(refreshToken, account.historyId);
-            const stats = await processMessages(refreshToken, messageIds);
+            const stats = await processMessages(account, messageIds);
             result = {
                 mode: "incremental",
                 totalFetched: messageIds.length,

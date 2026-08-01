@@ -1,5 +1,6 @@
 import { matchEventV2 } from "../matching.service";
 import * as repo from "../../event/event.repository";
+import * as matchingUtils from "../matching.utils";
 import { LOOSE_MATCH_WINDOW_DAYS } from "../../../shared/constants/config";
 
 jest.mock("../../event/event.repository", () => ({
@@ -8,9 +9,28 @@ jest.mock("../../event/event.repository", () => ({
   findByCompanyAndStage: jest.fn(),
 }));
 
+// AC-2 / ADR-006. `scoreEventMatch` is WRAPPED, not replaced: the real scoring
+// runs exactly as before, but its call history becomes observable. The identity
+// gate's contract is that a contradicted candidate is never scored at all, and
+// that is only provable by asserting on what the scorer was never asked to
+// evaluate — an assertion about the outcome alone cannot distinguish "vetoed"
+// from "scored and happened to lose".
+jest.mock("../matching.utils", () => {
+  const actual = jest.requireActual("../matching.utils");
+  return {
+    ...actual,
+    scoreEventMatch: jest.fn(actual.scoreEventMatch),
+  };
+});
+
 const mockFindByEventKey = repo.findByEventKey as jest.Mock;
 const mockFindNearbyEvents = repo.findNearbyEvents as jest.Mock;
 const mockFindByCompanyAndStage = repo.findByCompanyAndStage as jest.Mock;
+const mockScoreEventMatch = matchingUtils.scoreEventMatch as jest.Mock;
+
+// The set of candidate ids `scoreEventMatch` was actually invoked with.
+const scoredCandidateIds = (): number[] =>
+  mockScoreEventMatch.mock.calls.map((call: any[]) => call[0].event.id);
 
 describe("matchEventV2", () => {
   beforeEach(() => {
@@ -104,12 +124,18 @@ describe("matchEventV2", () => {
   });
 
   // 4. No match: same company, different stage.
+  // Pre-AC-2 this passed only because the candidate was placed 2 days apart, so
+  // the date term alone could not clear the threshold — at Δ=0 or Δ=1 the same
+  // shape produced a merge (D-1). Post-AC-2 the distance is irrelevant: the
+  // round contradicts, so the candidate is vetoed before it is ever scored. The
+  // distance is left as-is to keep this a genuine regression test of the old
+  // arithmetic path; the Δ=0 case is covered exhaustively further down.
   it("returns no match when a nearby event is the same company but a different stage", async () => {
     const nearby = {
       id: 4,
       company: "amazon",
       stage: "Interview", // different stage from incoming "OA"
-      date: "2026-08-22", // 2 days apart, so date alone can't clear the 0.5 threshold
+      date: "2026-08-22",
       confidence: 0,
     };
     mockFindNearbyEvents.mockResolvedValue([nearby]);
@@ -390,5 +416,313 @@ describe("matchEventV2 - tier 1 and tier 2 unaffected by AC-1", () => {
 
     expect(result).toMatchObject({ matchType: "soft" });
     expect(mockFindByCompanyAndStage).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-2 / ADR-006: Identity Precedes Similarity.
+//
+// Tier 2 previously decided identity WITH the similarity score: the date term
+// alone (0.5 × 1.0) equalled the acceptance threshold, so an exact date match
+// cleared the bar with zero contribution from the round — an identity
+// attribute. Two different rounds on one day merged (D-1).
+//
+// Identity is now classified categorically BEFORE any scoring:
+//   AGREES      -> eligible
+//   UNKNOWN     -> eligible  (silence is not denial; not a contradiction)
+//   CONTRADICTS -> vetoed, and never scored
+//
+// Only tier 2 changes. Tier 1 and tier 3 are asserted unchanged below.
+// ---------------------------------------------------------------------------
+
+describe("matchEventV2 - identity gate precedes similarity (AC-2 / ADR-006)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFindByEventKey.mockResolvedValue(null); // force the tier-2 path
+    mockFindNearbyEvents.mockResolvedValue([]);
+    mockFindByCompanyAndStage.mockResolvedValue([]);
+  });
+
+  // --- 1. Same company, same round, same day -> MATCH ----------------------
+
+  it("matches when company, round and day all agree", async () => {
+    const candidate = existingEvent(OBSERVED_ON); // stage "OA", Δ=0
+    mockFindNearbyEvents.mockResolvedValue([candidate]);
+
+    const result = await matchEventV2(incoming());
+
+    expect(result).toMatchObject({
+      event: expect.objectContaining({ id: 1 }),
+      matchType: "soft",
+    });
+    expect(result?.explanation).toContain("Exact date match");
+    expect(result?.explanation).toContain("Stage matched");
+    // Identity agreed, so the candidate was eligible and WAS scored.
+    expect(scoredCandidateIds()).toEqual([1]);
+  });
+
+  // --- 2. Same company, different round, same day -> vetoed pre-similarity --
+
+  it("rejects a contradicting round BEFORE similarity is evaluated", async () => {
+    // Δ=0 and both sides highly confident: under the old scoring this reached
+    // 0.5 + 0.2×0.9 = 0.68 and merged.
+    const candidate = existingEvent(OBSERVED_ON, {
+      id: 7,
+      stage: "Interview",
+      confidence: 0.9,
+    });
+    mockFindNearbyEvents.mockResolvedValue([candidate]);
+
+    const result = await matchEventV2(incoming({ confidence: 0.9 }));
+
+    expect(result).toBeNull();
+    // The load-bearing assertion: the veto happened before scoring, not after.
+    expect(mockScoreEventMatch).not.toHaveBeenCalled();
+  });
+
+  // --- 3. Same company, unknown round, same day -> UNKNOWN, retained -------
+
+  it("retains a candidate when the incoming round is unknown", async () => {
+    const candidate = existingEvent(OBSERVED_ON, { stage: "OA" });
+    mockFindNearbyEvents.mockResolvedValue([candidate]);
+
+    const result = await matchEventV2(incoming({ stage: "unknown" }));
+
+    // UNKNOWN is not a contradiction: the candidate stays eligible and
+    // similarity decides.
+    expect(scoredCandidateIds()).toEqual([1]);
+    expect(result).toMatchObject({
+      event: expect.objectContaining({ id: 1 }),
+      matchType: "soft",
+    });
+  });
+
+  // --- 4. Round extraction failure -> UNKNOWN -> still eligible ------------
+
+  it.each([
+    ["the sentinel string", "unknown"],
+    ["a null round", null],
+    ["an empty round", ""],
+    ["a whitespace round", "   "],
+  ])("treats %s as UNKNOWN and keeps the candidate eligible", async (_label, stage) => {
+    const candidate = existingEvent(OBSERVED_ON, { stage: "OA" });
+    mockFindNearbyEvents.mockResolvedValue([candidate]);
+
+    const result = await matchEventV2(incoming({ stage } as any));
+
+    expect(scoredCandidateIds()).toEqual([1]);
+    expect(result).toMatchObject({ matchType: "soft" });
+  });
+
+  it("treats an unresolved round on the STORED event as UNKNOWN, not agreement", async () => {
+    // A stored event whose round was never extracted must not be treated as
+    // agreeing with an incoming "unknown" — that would assert identity from
+    // mutual ignorance.
+    expect(matchingUtils.classifyRoundIdentity("unknown", "unknown")).toBe(
+      "UNKNOWN",
+    );
+
+    const candidate = existingEvent(OBSERVED_ON, { stage: "unknown" });
+    mockFindNearbyEvents.mockResolvedValue([candidate]);
+
+    const result = await matchEventV2(incoming({ stage: "OA" }));
+
+    // Still eligible — UNKNOWN never vetoes — so similarity ranks it.
+    expect(scoredCandidateIds()).toEqual([1]);
+    expect(result).toMatchObject({ matchType: "soft" });
+  });
+
+  // --- 5. Two nearby candidates: correct round wins ------------------------
+
+  it("selects the correct round even when the wrong round scores higher", async () => {
+    // Recognition Decision Matrix row D4. Pre-AC-2:
+    //   wrong round, Δ=0, c=0.8 -> 0.50 + 0.16 = 0.66  <- won
+    //   right round, Δ=2, c=0.3 -> 0.55 + 0.06 = 0.61
+    // The wrong-round event out-competed the correct one purely by being more
+    // confident. It is now vetoed and never scored.
+    const wrongRound = existingEvent(OBSERVED_ON, {
+      id: 2,
+      stage: "Interview",
+      confidence: 0.9,
+    });
+    const rightRound = existingEvent("2026-09-22", {
+      id: 3,
+      stage: "OA",
+      confidence: 0.3,
+    });
+    mockFindNearbyEvents.mockResolvedValue([wrongRound, rightRound]);
+
+    const result = await matchEventV2(incoming({ confidence: 0.8 }));
+
+    expect(result?.event?.id).toBe(3);
+    expect(scoredCandidateIds()).toEqual([3]);
+  });
+
+  // --- 8. Regression: D-1 is unreachable ----------------------------------
+
+  const DELTA_DATES: [number, string][] = [
+    [0, "2026-09-20"],
+    [1, "2026-09-21"],
+    [2, "2026-09-22"],
+    [3, "2026-09-23"],
+  ];
+  const CONFIDENCES = [0, 0.25, 0.5, 0.75, 1.0];
+
+  describe("D-1 regression sweep: a contradicting round can never match", () => {
+    for (const [delta, date] of DELTA_DATES) {
+      for (const confidence of CONFIDENCES) {
+        it(`Δ=${delta}, c=${confidence} -> no match, never scored`, async () => {
+          mockFindNearbyEvents.mockResolvedValue([
+            existingEvent(date, { id: 9, stage: "Interview", confidence }),
+          ]);
+
+          const result = await matchEventV2(
+            incoming({ stage: "OA", confidence }),
+          );
+
+          expect(result).toBeNull();
+          expect(mockScoreEventMatch).not.toHaveBeenCalled();
+        });
+      }
+    }
+  });
+
+  // --- Named edge cases from the AC-2 brief --------------------------------
+
+  it("edge case: stored Google OA + incoming Google UNKNOWN, same day -> eligible", async () => {
+    const stored = {
+      id: 11,
+      company: "google",
+      stage: "OA",
+      date: "2026-09-10",
+      confidence: 0.9,
+    };
+    mockFindNearbyEvents.mockResolvedValue([stored]);
+
+    const result = await matchEventV2({
+      company: "google",
+      stage: "unknown",
+      date: "2026-09-10",
+      confidence: 0.8,
+    });
+
+    expect(matchingUtils.classifyRoundIdentity("OA", "unknown")).toBe("UNKNOWN");
+    expect(mockScoreEventMatch).toHaveBeenCalled(); // similarity WAS evaluated
+    expect(result).toMatchObject({ event: stored, matchType: "soft" });
+  });
+
+  it("edge case: stored Google OA + incoming Google Interview, same day -> vetoed", async () => {
+    const stored = {
+      id: 12,
+      company: "google",
+      stage: "OA",
+      date: "2026-09-10",
+      confidence: 0.9,
+    };
+    mockFindNearbyEvents.mockResolvedValue([stored]);
+
+    const result = await matchEventV2({
+      company: "google",
+      stage: "Interview",
+      date: "2026-09-10",
+      confidence: 0.8,
+    });
+
+    expect(matchingUtils.classifyRoundIdentity("OA", "Interview")).toBe(
+      "CONTRADICTS",
+    );
+    expect(result).toBeNull();
+    expect(mockScoreEventMatch).not.toHaveBeenCalled();
+  });
+
+  // --- Mixed sets: the veto is per-candidate, not per-batch -----------------
+
+  it("vetoes only the contradicting candidate and scores the rest", async () => {
+    const contradicting = existingEvent(OBSERVED_ON, {
+      id: 21,
+      stage: "PPT",
+      confidence: 0.9,
+    });
+    const agreeing = existingEvent("2026-09-21", { id: 22, stage: "OA" });
+    const unknownRound = existingEvent("2026-09-19", {
+      id: 23,
+      stage: "unknown",
+    });
+    mockFindNearbyEvents.mockResolvedValue([
+      contradicting,
+      agreeing,
+      unknownRound,
+    ]);
+
+    const result = await matchEventV2(incoming());
+
+    expect(scoredCandidateIds()).toEqual([22, 23]); // 21 never scored
+    expect(result?.event?.id).toBe(22); // agreeing round outranks unknown
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6 & 7: tiers 1 and 3 are explicitly out of AC-2's scope.
+// ---------------------------------------------------------------------------
+
+describe("matchEventV2 - tier 1 and tier 3 unaffected by AC-2", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFindByEventKey.mockResolvedValue(null);
+    mockFindNearbyEvents.mockResolvedValue([]);
+    mockFindByCompanyAndStage.mockResolvedValue([]);
+  });
+
+  it("tier 1: an exact key hit is still accepted unconditionally, with no identity gate", async () => {
+    const existing = existingEvent(OBSERVED_ON);
+    mockFindByEventKey.mockResolvedValue(existing);
+
+    const result = await matchEventV2(incoming());
+
+    expect(result).toMatchObject({
+      event: existing,
+      matchType: "exact",
+      confidence: 1.0,
+    });
+    expect(mockFindNearbyEvents).not.toHaveBeenCalled();
+    expect(mockFindByCompanyAndStage).not.toHaveBeenCalled();
+    expect(mockScoreEventMatch).not.toHaveBeenCalled();
+  });
+
+  it("tier 1: an unresolved round still produces a key and is still looked up", async () => {
+    // AC-2 does not change key construction. Documented as unchanged so a later
+    // change to it is a deliberate decision rather than a side effect.
+    const existing = { ...existingEvent(OBSERVED_ON), stage: "unknown" };
+    mockFindByEventKey.mockResolvedValue(existing);
+
+    const result = await matchEventV2(incoming({ stage: "unknown" }));
+
+    expect(mockFindByEventKey).toHaveBeenCalledWith("amazon|unknown|2026-09-20");
+    expect(result).toMatchObject({ matchType: "exact", confidence: 1.0 });
+  });
+
+  it("tier 3: a sole in-window candidate still matches at fixed confidence 0.6", async () => {
+    mockFindByCompanyAndStage.mockResolvedValue([existingEvent("2026-09-30")]);
+
+    const result = await matchEventV2(incoming());
+
+    expect(result).toMatchObject({ matchType: "loose", confidence: 0.6 });
+    // Tier 3 has no identity gate: it filters on round in the repository query.
+    expect(mockScoreEventMatch).not.toHaveBeenCalled();
+  });
+
+  it("tier 3: the AC-1 window and uniqueness rule are unchanged", async () => {
+    mockFindByCompanyAndStage.mockResolvedValue([
+      existingEvent("2026-09-25", { id: 1 }),
+      existingEvent("2026-10-05", { id: 2 }),
+    ]);
+
+    expect(await matchEventV2(incoming())).toBeNull();
+    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith({
+      company: "amazon",
+      stage: "OA",
+      date: OBSERVED_ON,
+      windowDays: LOOSE_MATCH_WINDOW_DAYS,
+    });
   });
 });

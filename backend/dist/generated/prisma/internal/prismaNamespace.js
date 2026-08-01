@@ -70,6 +70,7 @@ export const ModelName = {
     Event: 'Event',
     EventUpdate: 'EventUpdate',
     Email: 'Email',
+    Attachment: 'Attachment',
     EmailExtraction: 'EmailExtraction',
     GmailAccount: 'GmailAccount'
 };
@@ -108,6 +109,7 @@ export const EventUpdateScalarFieldEnum = {
 export const EmailScalarFieldEnum = {
     id: 'id',
     gmailMessageId: 'gmailMessageId',
+    gmailAccountId: 'gmailAccountId',
     subject: 'subject',
     body: 'body',
     sender: 'sender',
@@ -115,6 +117,25 @@ export const EmailScalarFieldEnum = {
     processingStatus: 'processingStatus',
     failureReason: 'failureReason',
     createdAt: 'createdAt'
+};
+export const AttachmentScalarFieldEnum = {
+    id: 'id',
+    emailId: 'emailId',
+    gmailAttachmentId: 'gmailAttachmentId',
+    filename: 'filename',
+    mimeType: 'mimeType',
+    size: 'size',
+    storagePath: 'storagePath',
+    processingStatus: 'processingStatus',
+    processingError: 'processingError',
+    processedAt: 'processedAt',
+    text: 'text',
+    parsedData: 'parsedData',
+    parsedMetadata: 'parsedMetadata',
+    parsedAt: 'parsedAt',
+    parsingError: 'parsingError',
+    createdAt: 'createdAt',
+    updatedAt: 'updatedAt'
 };
 export const EmailExtractionScalarFieldEnum = {
     id: 'id',
@@ -142,6 +163,10 @@ export const SortOrder = {
     asc: 'asc',
     desc: 'desc'
 };
+export const NullableJsonNullValueInput = {
+    DbNull: DbNull,
+    JsonNull: JsonNull
+};
 export const QueryMode = {
     default: 'default',
     insensitive: 'insensitive'
@@ -149,6 +174,11 @@ export const QueryMode = {
 export const NullsOrder = {
     first: 'first',
     last: 'last'
+};
+export const JsonNullValueFilter = {
+    DbNull: DbNull,
+    JsonNull: JsonNull,
+    AnyNull: AnyNull
 };
 export const defineExtension = runtime.Extensions.defineExtension;
 //# sourceMappingURL=prismaNamespace.js.map

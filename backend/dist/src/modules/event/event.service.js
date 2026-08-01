@@ -1,5 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
-import { createEvent, updateEvent as updateEventRepo, } from "./event.repository.js";
+import { createEvent } from "./event.repository.js";
 import { generateEventKey } from "./event.utils.js";
 import { toUTCDate, toISTKey } from "../../shared/utils/date.js";
 // CREATE
@@ -28,17 +28,6 @@ export const updateEventService = async (eventId, existing, incoming) => {
         console.log("Skipping update due to lower confidence");
         return existing; // stop update
     }
-    // Store change history
-    for (const change of changes) {
-        await prisma.eventUpdate.create({
-            data: {
-                eventId,
-                field: change.field,
-                oldValue: change.oldValue,
-                newValue: change.newValue,
-            },
-        });
-    }
     // Prepare update data
     const updateData = {};
     if (changes.some((c) => c.field === "date")) {
@@ -48,8 +37,6 @@ export const updateEventService = async (eventId, existing, incoming) => {
         updateData.time = incoming.time;
     }
     if (changes.some((c) => c.field === "venue")) {
-        // If explicit, write the exact value (may be null → clears the column).
-        // Otherwise the change was detected via the non-null fallback path, so use incoming.venue.
         updateData.venue = incoming.venueMeta?.isExplicit
             ? incoming.venueMeta.value
             : (incoming.venue ?? null);
@@ -57,16 +44,34 @@ export const updateEventService = async (eventId, existing, incoming) => {
     // RESCHEDULE LOGIC
     if (isRescheduled) {
         updateData.status = "rescheduled";
-        // regenerate eventKey
         updateData.eventKey = generateEventKey({
             company: existing.company,
             stage: existing.stage,
             date: incoming.date,
         });
     }
-    return updateEventRepo(eventId, {
-        ...updateData,
-        confidence: newConfidence,
+    return prisma.$transaction(async (tx) => {
+        // Store change history
+        for (const change of changes) {
+            await tx.eventUpdate.create({
+                data: {
+                    eventId,
+                    field: change.field,
+                    oldValue: change.oldValue,
+                    newValue: change.newValue,
+                },
+            });
+        }
+        // Update event
+        return tx.event.update({
+            where: {
+                id: eventId,
+            },
+            data: {
+                ...updateData,
+                confidence: newConfidence,
+            },
+        });
     });
 };
 export const detectChanges = (existing, incoming) => {
