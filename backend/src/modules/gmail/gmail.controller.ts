@@ -11,6 +11,7 @@ import {
   UnverifiedGoogleIdentityError,
   InactiveUserError,
 } from "../user/user.service.js";
+import { establishSession } from "../auth/session.service.js";
 import { syncGmailAccount } from "./gmail.sync.service.js";
 import { getLatestConnectedGmailAccount } from "./gmail.repository.js";
 
@@ -28,11 +29,13 @@ export const gmailAuthController = (req: Request, res: Response) => {
 // succeeded, and resolving the User earlier would leave an orphan User row
 // behind whenever the token exchange or profile lookup failed.
 //
-// This establishes identity. It does not authenticate anyone — no session is
-// created, no cookie is set, and no route is protected by the result (AC-5.4,
-// AC-5.5). The OAuth `state` parameter is still absent, unchanged from before;
-// it is specified in RFC-001 §10.1 and requires the server-side store that
-// AC-5.4 introduces.
+// AC-5.4 adds the session: once identity is resolved and the mailbox linked,
+// the caller is authenticated. No route consumes that session yet — reading it
+// back to identify a caller is `requireAuth` in AC-5.5.
+//
+// The OAuth `state` parameter is still absent (RFC-001 §10.1). That was
+// tolerable while the callback issued nothing; now that it issues a session it
+// is a live CSRF hole and must close before this flow is exposed to real users.
 export const gmailCallbackController = async (req: Request, res: Response) => {
   try {
     const code = req.query.code as string;
@@ -71,6 +74,13 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
     // without a linked mailbox — which is a legitimate state anyway, since a
     // User may own zero mailboxes (RFC-001 §6.2 P2).
     await connectGmailAccount(email, tokens.refresh_token, user.id);
+
+    // Session established last, so a session only exists once the whole
+    // exchange has succeeded. `establishSession` regenerates the session id
+    // before writing to it, which is what makes this immune to fixation
+    // (RFC-001 §10.1), then persists and saves the record before this response
+    // carries its cookie back.
+    await establishSession(req, user);
 
     // Response shape unchanged. Nothing about the User is exposed: `publicId`
     // is the only identifier that may ever leave the backend (RFC-001 §8.2),
