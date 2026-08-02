@@ -10,7 +10,8 @@ import {
   getEmailByGmailMessageId,
 } from "../email/email.repository.js";
 import { enqueueEmailProcessing } from "../email/email.producer.js";
-import { updateHistoryId } from "./gmail.repository.js";
+import { updateHistoryId, getGmailAccountsByUser } from "./gmail.repository.js";
+import type { TenantContext } from "../auth/tenant-context.js";
 
 export type SyncMessageResult =
   | { status: "duplicate"; emailId: number }
@@ -177,4 +178,65 @@ export const syncGmailAccount = async (
   await updateHistoryId(account.email, result.latestHistoryId);
 
   return result;
+};
+
+export type MailboxSyncOutcome =
+  | { email: string; status: "synced"; result: SyncAccountResult }
+  | { email: string; status: "failed"; error: string };
+
+export type UserSyncResult = {
+  mailboxes: MailboxSyncOutcome[];
+  synced: number;
+  failed: number;
+};
+
+// Synchronize every mailbox owned by the caller — RFC-001 §10's `Synchronize(userId)`.
+//
+// The service resolves the mailboxes itself rather than accepting them from the
+// controller. That is the point of the change: a caller cannot pass in the wrong
+// mailbox, because a caller does not choose the mailbox at all. It is derived
+// from the tenant, and the tenant is derived from the session.
+//
+// Zero mailboxes is a normal outcome, not an error. A User may own none — that
+// is the state of every User between authenticating and connecting a mailbox
+// (RFC-001 §6.2 P2).
+//
+// Each mailbox is synchronized independently and sequentially, preserving the
+// existing per-account semantics exactly: its own `historyId` cursor, its own
+// full-versus-incremental decision, its own expired-cursor fallback. One
+// mailbox's failure is captured and reported, never allowed to abort the
+// mailboxes behind it — the same guarantee the background scheduler already
+// provides (RFC-001 §14.2 S2).
+export const syncUserMailboxes = async (
+  context: TenantContext,
+): Promise<UserSyncResult> => {
+  const accounts = await getGmailAccountsByUser(context);
+
+  const mailboxes: MailboxSyncOutcome[] = [];
+
+  let synced = 0;
+  let failed = 0;
+
+  for (const account of accounts) {
+    try {
+      const result = await syncGmailAccount(account);
+
+      synced += 1;
+
+      mailboxes.push({ email: account.email, status: "synced", result });
+    } catch (error) {
+      failed += 1;
+
+      const message = error instanceof Error ? error.message : "Unknown error";
+
+      console.error(
+        `[gmail-sync] Failed to sync mailbox ${account.email} for user ${context.userId}`,
+        error,
+      );
+
+      mailboxes.push({ email: account.email, status: "failed", error: message });
+    }
+  }
+
+  return { mailboxes, synced, failed };
 };

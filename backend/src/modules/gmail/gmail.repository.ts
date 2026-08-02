@@ -1,4 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
+import type { TenantContext } from "../auth/tenant-context.js";
 
 // Connect a mailbox and attach it to the User who authorized it.
 //
@@ -62,14 +63,39 @@ export const getGmailAccount = async (email: string) => {
   });
 };
 
-// Single-account model for now: pick whichever account is connected.
-export const getFirstGmailAccount = async () => {
-  return prisma.gmailAccount.findFirst();
+// Every mailbox owned by a User, oldest connection first so the order a caller
+// observes is stable across requests (RFC-001 §14.1).
+//
+// This is the only mailbox resolver an authenticated flow may use. It answers
+// "which mailboxes belong to this caller", which is a question about ownership;
+// the resolvers below answer "which mailbox happens to be around", which is a
+// question about global state and has no correct answer once more than one User
+// exists.
+//
+// Deliberately not filtered on `syncStatus` yet, though RFC-001 §14.1 specifies
+// that filter. The column defaults to `pending` and nothing transitions it to
+// `active` until the mailbox lifecycle lands, so applying the filter now would
+// resolve zero mailboxes for every caller. The filter belongs with the
+// transitions that populate it.
+export const getGmailAccountsByUser = async (context: TenantContext) => {
+  return prisma.gmailAccount.findMany({
+    where: {
+      userId: context.userId,
+    },
+    orderBy: {
+      connectedAt: "asc",
+    },
+  });
 };
 
-// Used by the background scheduler to sync every connected account.
-export const getAllGmailAccounts = async () => {
-  return prisma.gmailAccount.findMany();
+// Single-account model for now: pick whichever account is connected.
+//
+// DEAD as of AC-5.6 and retained only until AC-5.11 deletes it. Both of these
+// resolve a mailbox from global state, which is the single-user assumption this
+// RFC removes. Neither may be called from an authenticated flow — use
+// `getGmailAccountsByUser`.
+export const getFirstGmailAccount = async () => {
+  return prisma.gmailAccount.findFirst();
 };
 
 export const getLatestConnectedGmailAccount = async () => {
@@ -78,6 +104,16 @@ export const getLatestConnectedGmailAccount = async () => {
       connectedAt: "desc",
     },
   });
+};
+
+// Used by the background scheduler to sync every connected account.
+//
+// Still global, deliberately: the scheduler is background work with no caller to
+// derive a tenant from, and scheduler changes are out of scope for AC-5.6. It
+// remains correct for now because each account carries its own owner and its own
+// cursor, so a per-account sync is already tenant-safe (RFC-001 §14.2 S2).
+export const getAllGmailAccounts = async () => {
+  return prisma.gmailAccount.findMany();
 };
 
 export const updateHistoryId = async (email: string, historyId: string) => {

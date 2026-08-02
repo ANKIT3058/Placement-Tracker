@@ -12,8 +12,8 @@ import {
   InactiveUserError,
 } from "../user/user.service.js";
 import { establishSession } from "../auth/session.service.js";
-import { syncGmailAccount } from "./gmail.sync.service.js";
-import { getLatestConnectedGmailAccount } from "./gmail.repository.js";
+import { requireTenantContext } from "../auth/tenant-context.js";
+import { syncUserMailboxes } from "./gmail.sync.service.js";
 
 export const gmailAuthController = (req: Request, res: Response) => {
   const url = generateAuthUrl();
@@ -111,35 +111,32 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
   }
 };
 
+// Synchronize the caller's own mailboxes.
+//
+// The controller no longer chooses a mailbox. It derives the tenant from the
+// authenticated session and hands it to the service, which resolves ownership
+// itself (RFC-001 §10). There is no longer any input — from the caller or from
+// the database — that can point this at someone else's mailbox.
+//
+// Zero mailboxes answers 200 with an empty list rather than the previous 404. A
+// User who owns no mailbox is in a legitimate state, not a missing resource, and
+// 404 would tell an authenticated caller their own account is absent.
 export const gmailSyncController = async (req: Request, res: Response) => {
-  const account = await getLatestConnectedGmailAccount();
+  const context = requireTenantContext(req);
 
-  if (!account) {
-    return res.status(404).json({
-      success: false,
-    });
-  }
+  const result = await syncUserMailboxes(context);
 
-  const result = await syncGmailAccount(account);
-
-  console.log({
-    mode: result.mode,
-    totalFetched: result.totalFetched,
-    processed: result.stats.processed,
-    duplicates: result.stats.duplicates,
-    queued: result.stats.queued,
-    failed: result.stats.failed,
-    latestHistoryId: result.latestHistoryId,
+  console.log("[gmail-sync] Manual sync complete", {
+    userId: context.userId,
+    mailboxes: result.mailboxes.length,
+    synced: result.synced,
+    failed: result.failed,
   });
 
   return res.json({
     success: true,
-    mode: result.mode,
-    totalFetched: result.totalFetched,
-    processed: result.stats.processed,
-    duplicates: result.stats.duplicates,
-    queued: result.stats.queued,
-    failed: result.stats.failed,
-    latestHistoryId: result.latestHistoryId,
+    synced: result.synced,
+    failed: result.failed,
+    mailboxes: result.mailboxes,
   });
 };

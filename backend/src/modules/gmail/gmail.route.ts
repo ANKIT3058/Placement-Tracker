@@ -21,9 +21,8 @@ router.get("/callback", gmailCallbackController);
 // browser. Protecting it and leaving it a GET would introduce the vulnerability
 // that protecting it was meant to close.
 //
-// Still resolves the mailbox via `getLatestConnectedGmailAccount()`, unchanged.
-// Ownership-first resolution — syncing the *caller's* mailboxes rather than the
-// most recently connected one — is AC-5.7.
+// Synchronizes the mailboxes the caller owns, resolved from the session via
+// TenantContext (AC-5.6). No caller input selects a mailbox.
 router.post("/sync", requireAuth, gmailSyncController);
 
 export default router;
