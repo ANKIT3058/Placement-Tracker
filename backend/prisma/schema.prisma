@@ -12,6 +12,40 @@ datasource db {
   provider = "postgresql"
 }
 
+// The root aggregate of the domain (RFC-001 §6.2 P1). Introduced by AC-5.1 as a
+// standalone table: nothing references it yet, and it references nothing.
+//
+// Identity is keyed on `googleSub` — the opaque, immutable Google subject — and
+// never on `email`, which is mutable, reassignable by a Workspace administrator,
+// and therefore unsafe as an authentication key (RFC-001 §8.1). `email` carries
+// no unique constraint for the same reason; it is a display and contact
+// attribute, indexed only for lookup.
+//
+// The back-relations to GmailAccount, Email, Event and EventUpdate specified in
+// RFC-001 §12.1 are deliberately absent here. Prisma requires the opposite side
+// of a relation to exist, and that side is the nullable `userId` column on each
+// child — which belongs to AC-5.2. Declaring them now would force those columns
+// into this migration. They are added in AC-5.2 alongside the columns that make
+// them representable.
+model User {
+  id       Int    @id @default(autoincrement())
+  publicId String @unique @default(uuid())
+
+  googleSub     String  @unique
+  email         String
+  emailVerified Boolean @default(false)
+  name          String?
+  imageUrl      String?
+
+  status      String    @default("active") // active | disabled | deleted
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastLoginAt DateTime?
+  deletedAt   DateTime?
+
+  @@index([email])
+}
+
 model Event {
   id Int @id @default(autoincrement())
 
