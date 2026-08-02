@@ -1,6 +1,20 @@
 import { prisma } from "../../lib/prisma.js";
 import type { GoogleIdentity } from "./user.types.js";
 
+// Read the current state of a User by internal id.
+//
+// Called on every authenticated request, deliberately. The session stores a
+// `userId`, not a snapshot, precisely so that disabling or deleting a User takes
+// effect on their next request rather than on their next login (RFC-001 §11.1).
+// Caching this would reintroduce exactly the staleness the session shape avoids.
+export const getUserById = async (id: number) => {
+  return prisma.user.findUnique({
+    where: {
+      id,
+    },
+  });
+};
+
 // Find-or-create keyed on `googleSub`, expressed as a single upsert rather than
 // a read followed by a conditional write. Two concurrent callbacks for the same
 // identity — a double-clicked consent screen is enough — would both miss on the
