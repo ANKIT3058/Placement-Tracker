@@ -126,6 +126,34 @@ Numbering begins at 006; ADR-001 through ADR-005 do not exist.
   only candidates that already satisfy them. Similarity never establishes
   identity.
 
+### `rfcs/`
+
+Requests for Comments. An RFC records a proposed change **in full** — motivation,
+goals and non-goals, the design, the alternatives weighed, the migration, and the
+rollout — before and during implementation. Where an ADR records one settled
+decision in isolation, an RFC records the whole shape of a change and may produce
+several ADRs, or none.
+
+RFCs are numbered independently of ADRs; the sequences do not correspond.
+
+- [RFC-001-authentication-multi-user-foundation.md](rfcs/RFC-001-authentication-multi-user-foundation.md)
+  — **Accepted.** Identity, authentication, authorization, ownership boundaries,
+  and the multi-user foundation the existing reasoning engine now operates
+  within.
+
+### `runbooks/`
+
+Operational procedures. Runbooks answer *how do I operate this?* — starting the
+stack, signing in, applying a migration, recovering from a specific failure.
+They are permitted to name commands, ports, URLs, and error strings, which is
+both their value and the reason they stale faster than anything else here.
+
+**Where a runbook and this handbook disagree, the handbook is the specification
+and the runbook is the bug.**
+
+- [runbooks/README.md](runbooks/README.md) — what runbooks are, how they differ
+  from the handbook, ADRs and RFCs, and the reading order for a new contributor.
+
 ---
 
 ## Reading order

@@ -1,0 +1,11 @@
+{
+  // Typechecks the migration tooling without pulling it into the application
+  // build. The root tsconfig includes only src/ and generated/, so `npm run
+  // build` emits nothing from here — these scripts are run through tsx.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts"]
+}

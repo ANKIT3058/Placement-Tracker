@@ -16,3 +16,7 @@ prisma.config.d.ts.map
 
 # Downloaded email attachments (local storage backend)
 /storage
+
+# Database dumps written by the migration verification framework
+# (scripts/migration). These contain real data and must never be committed.
+/backups

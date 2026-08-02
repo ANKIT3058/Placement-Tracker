@@ -1,89 +1,147 @@
 -- AC-5.9 — Ownership backfill (RFC-001 §19 Phase 3).
 --
--- Assigns an owner to every pre-existing row. Data only: no schema change, no
--- constraint. The NOT NULL migration that follows depends on this having
--- succeeded, which is why every failure mode here aborts instead of skipping.
+-- Data migration. Contains no DDL: the columns it fills were added by
+-- 20260802010000, and the constraints that make them mandatory are applied by
+-- 20260802030000. Schema and data are separate migrations so that either can be
+-- reasoned about, replayed, or rolled back without the other.
 --
--- Prisma runs each migration file in a single transaction, so any RAISE below
--- rolls the whole thing back and leaves the database exactly as it was.
---
--- THE SINGLE-TENANT ASSUMPTION
---
--- Ownership of legacy rows is not derivable in general. `Event` has no link to
--- the Email that produced it (there is no `sourceEmailId` — see RFC-001 §22.1),
--- and Emails ingested before account tracking have no `gmailAccountId` either.
--- The backfill is therefore only sound while the database holds exactly one
--- User, which is the state RFC-001 §19 Phase 3 requires it to run in.
---
--- That assumption is asserted, not assumed: if a second User exists, this
--- migration refuses to run rather than attributing one person's placement
--- history to another. Recovering from a wrong attribution would mean knowing the
--- answer this migration could not derive in the first place.
-
 -- ---------------------------------------------------------------------------
--- 1. Preconditions
+-- WHY THIS MIGRATION LOOKS THE WAY IT DOES
 -- ---------------------------------------------------------------------------
+--
+-- Prisma replays the whole migration chain against an empty shadow database to
+-- detect drift. A data migration that *requires* data — or worse, requires
+-- application state such as somebody having completed Google OAuth — cannot
+-- survive that replay, and would also fail on any freshly provisioned
+-- environment. Two rules follow, and everything below is a consequence of them:
+--
+--   1. NOTHING TO BACKFILL IS SUCCESS. An empty database is the normal case,
+--      not an error. The migration inspects the data and returns immediately
+--      when no row needs an owner.
+--
+--   2. THE MIGRATION SUPPLIES ITS OWN OWNER. It never waits for a User to
+--      exist. Where ownership cannot be derived from a parent row, it mints a
+--      clearly-marked legacy owner rather than depending on an application
+--      event that a migration engine cannot cause.
+--
+-- The result is deterministic — the outcome is a function of the database
+-- contents alone — and idempotent, so a re-run after a partial failure
+-- converges rather than duplicating.
+--
+-- ---------------------------------------------------------------------------
+-- HOW OWNERSHIP IS DECIDED
+-- ---------------------------------------------------------------------------
+--
+--   * Derivable rows follow their parent: Email → GmailAccount,
+--     EventUpdate → Event, EmailExtraction/Attachment → Email. This is exact,
+--     never a guess, and satisfies the composite foreign keys added by the next
+--     migration by construction.
+--
+--   * Root rows (GmailAccount, Event, and Emails ingested before mailboxes were
+--     tracked) have no parent to follow. They go to:
+--       - the sole real User, when exactly one exists — RFC-001 §19 Phase 3's
+--         single-tenant rule, and the common case for this project;
+--       - otherwise the legacy owner, a disabled placeholder. Zero users and
+--         several users are both handled this way, because in neither case is
+--         there a non-arbitrary answer, and quarantining data under an
+--         identifiable owner is recoverable where mis-attributing it is not.
+--
+-- The legacy owner is `status = 'disabled'`, so authentication rejects it and
+-- nobody can log in as it. Transferring its data to a real account is a
+-- deliberate application-level step, not something a migration should decide:
+--   npm run migration:claim -- --to <userId>
 
 DO $$
 DECLARE
-  user_count int;
-BEGIN
-  SELECT count(*) INTO user_count FROM "User" WHERE "deletedAt" IS NULL;
+  -- A real Google `sub` is a numeric string, so a colon-prefixed sentinel can
+  -- never collide with one.
+  legacy_sub     CONSTANT text := 'migration:legacy-owner';
+  -- Fixed rather than generated, so replaying this migration on two databases
+  -- produces identical rows.
+  legacy_public  CONSTANT text := '00000000-0000-4000-8000-000000000001';
 
-  IF user_count = 0 THEN
-    RAISE EXCEPTION
-      'AC-5.9 backfill aborted: no User exists to own existing records. Complete the Google OAuth flow once before migrating.';
+  pending          bigint;
+  real_user_count  bigint;
+  owner_id         integer;
+BEGIN
+  ------------------------------------------------------------------------
+  -- 1. Is there anything to do?
+  ------------------------------------------------------------------------
+  SELECT (SELECT count(*) FROM "GmailAccount"    WHERE "userId" IS NULL)
+       + (SELECT count(*) FROM "Email"           WHERE "userId" IS NULL)
+       + (SELECT count(*) FROM "Event"           WHERE "userId" IS NULL)
+       + (SELECT count(*) FROM "EventUpdate"     WHERE "userId" IS NULL)
+       + (SELECT count(*) FROM "EmailExtraction" WHERE "userId" IS NULL)
+       + (SELECT count(*) FROM "Attachment"      WHERE "userId" IS NULL)
+    INTO pending;
+
+  IF pending = 0 THEN
+    -- The shadow database, a fresh environment, and a re-run after a completed
+    -- backfill all land here.
+    RAISE NOTICE 'Ownership backfill: nothing to do (no unowned rows).';
+    RETURN;
   END IF;
 
-  IF user_count > 1 THEN
-    RAISE EXCEPTION
-      'AC-5.9 backfill aborted: % users exist. The backfill rule is only sound for a single-tenant database (RFC-001 §19 Phase 3). Ownership of legacy rows must be resolved manually before this migration can run.',
-      user_count;
+  RAISE NOTICE 'Ownership backfill: % unowned row(s) found.', pending;
+
+  ------------------------------------------------------------------------
+  -- 2. Resolve an owner for rows with no parent to inherit from
+  ------------------------------------------------------------------------
+  SELECT count(*) INTO real_user_count
+    FROM "User"
+   WHERE "deletedAt" IS NULL
+     AND "googleSub" <> legacy_sub;
+
+  IF real_user_count = 1 THEN
+    SELECT id INTO owner_id
+      FROM "User"
+     WHERE "deletedAt" IS NULL
+       AND "googleSub" <> legacy_sub;
+
+    RAISE NOTICE 'Ownership backfill: assigning root records to the sole User (id %).', owner_id;
+  ELSE
+    -- ON CONFLICT makes this idempotent across re-runs and across a partially
+    -- applied previous attempt.
+    INSERT INTO "User" ("publicId", "googleSub", "email", "emailVerified",
+                        "name", "status", "createdAt", "updatedAt")
+    VALUES (legacy_public,
+            legacy_sub,
+            'legacy-data-owner@migration.invalid',  -- RFC 2606 reserved TLD
+            false,
+            'Legacy data (pre multi-user)',
+            'disabled',
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP)
+    ON CONFLICT ("googleSub") DO NOTHING;
+
+    SELECT id INTO owner_id FROM "User" WHERE "googleSub" = legacy_sub;
+
+    RAISE NOTICE
+      'Ownership backfill: % real user(s) found; assigning root records to the legacy owner (id %). Run `npm run migration:claim -- --to <userId>` to transfer them.',
+      real_user_count, owner_id;
   END IF;
-END $$;
 
--- ---------------------------------------------------------------------------
--- 2. Backfill, parents before children
--- ---------------------------------------------------------------------------
--- Each child derives its owner from its parent wherever the link exists, so the
--- result satisfies the composite foreign keys added by the next migration by
--- construction rather than by coincidence. Only the two cases with no derivable
--- parent fall back to the sole User.
+  ------------------------------------------------------------------------
+  -- 3. Backfill, parents before children
+  ------------------------------------------------------------------------
+  UPDATE "GmailAccount" SET "userId" = owner_id WHERE "userId" IS NULL;
 
-DO $$
-DECLARE
-  target_user int;
-BEGIN
-  SELECT id INTO target_user FROM "User" WHERE "deletedAt" IS NULL;
-
-  -- Mailboxes connected before ownership was recorded.
-  UPDATE "GmailAccount"
-     SET "userId" = target_user
-   WHERE "userId" IS NULL;
-
-  -- Emails follow the mailbox that produced them. Rows predating account
-  -- tracking (`gmailAccountId IS NULL`, see the column comment on Email) have no
-  -- mailbox to follow and fall back to the sole User.
+  -- Emails follow the mailbox that produced them; those predating mailbox
+  -- tracking have none and fall back to the resolved owner.
   UPDATE "Email" e
      SET "userId" = COALESCE(
            (SELECT ga."userId" FROM "GmailAccount" ga WHERE ga.id = e."gmailAccountId"),
-           target_user
-         )
+           owner_id)
    WHERE e."userId" IS NULL;
 
-  -- Events have no persisted link to their originating Email, so the sole User
-  -- is the only available answer.
-  UPDATE "Event"
-     SET "userId" = target_user
-   WHERE "userId" IS NULL;
+  -- Events carry no link to the Email that produced them (RFC-001 §22.1), so
+  -- the resolved owner is the only available answer.
+  UPDATE "Event" SET "userId" = owner_id WHERE "userId" IS NULL;
 
-  -- History follows its Event. Never the fallback: an EventUpdate without an
-  -- Event cannot exist (the relation already cascades).
   UPDATE "EventUpdate" eu
      SET "userId" = (SELECT ev."userId" FROM "Event" ev WHERE ev.id = eu."eventId")
    WHERE eu."userId" IS NULL;
 
-  -- Derivative records follow their Email, for the same reason.
   UPDATE "EmailExtraction" ex
      SET "userId" = (SELECT em."userId" FROM "Email" em WHERE em.id = ex."emailId")
    WHERE ex."userId" IS NULL;
@@ -94,18 +152,22 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 3. Verification — completeness
+-- 4. Verification
 -- ---------------------------------------------------------------------------
--- The next migration applies NOT NULL. A single row missed here would make that
--- migration fail mid-deploy, so the check happens where it can still roll back
--- cleanly.
+-- The next migration applies NOT NULL and the composite foreign keys. A row
+-- missed or mis-assigned here would fail that migration mid-deploy, against a
+-- half-constrained schema. These checks move that failure to a point where the
+-- whole thing still rolls back cleanly.
+--
+-- Every check is vacuously true on an empty database, so the shadow replay
+-- passes through them without special-casing.
 
 DO $$
 DECLARE
   offending record;
 BEGIN
   FOR offending IN
-    SELECT 'GmailAccount'    AS table_name, count(*) AS n FROM "GmailAccount"    WHERE "userId" IS NULL
+              SELECT 'GmailAccount'    AS t, count(*) AS n FROM "GmailAccount"    WHERE "userId" IS NULL
     UNION ALL SELECT 'Email',           count(*) FROM "Email"           WHERE "userId" IS NULL
     UNION ALL SELECT 'Event',           count(*) FROM "Event"           WHERE "userId" IS NULL
     UNION ALL SELECT 'EventUpdate',     count(*) FROM "EventUpdate"     WHERE "userId" IS NULL
@@ -113,65 +175,45 @@ BEGIN
     UNION ALL SELECT 'Attachment',      count(*) FROM "Attachment"      WHERE "userId" IS NULL
   LOOP
     IF offending.n > 0 THEN
-      RAISE EXCEPTION
-        'AC-5.9 backfill aborted: % rows in "%" still have no owner.',
-        offending.n, offending.table_name;
+      RAISE EXCEPTION 'Ownership backfill incomplete: % row(s) in "%" still have no owner.',
+        offending.n, offending.t;
     END IF;
   END LOOP;
 END $$;
 
--- ---------------------------------------------------------------------------
--- 4. Verification — consistency
--- ---------------------------------------------------------------------------
--- Every child must agree with its parent. The next migration turns these into
--- composite foreign keys, at which point disagreement becomes unrepresentable
--- (RFC-001 §12.3) — but a constraint cannot be added over data that already
--- violates it, so the violation has to surface here.
-
 DO $$
 DECLARE
-  bad_emails      int;
-  bad_updates     int;
-  bad_extractions int;
-  bad_attachments int;
+  bad_emails      bigint;
+  bad_updates     bigint;
+  bad_extractions bigint;
+  bad_attachments bigint;
 BEGIN
   SELECT count(*) INTO bad_emails
-    FROM "Email" e
-    JOIN "GmailAccount" ga ON ga.id = e."gmailAccountId"
+    FROM "Email" e JOIN "GmailAccount" ga ON ga.id = e."gmailAccountId"
    WHERE e."userId" IS DISTINCT FROM ga."userId";
 
   SELECT count(*) INTO bad_updates
-    FROM "EventUpdate" eu
-    JOIN "Event" ev ON ev.id = eu."eventId"
+    FROM "EventUpdate" eu JOIN "Event" ev ON ev.id = eu."eventId"
    WHERE eu."userId" IS DISTINCT FROM ev."userId";
 
   SELECT count(*) INTO bad_extractions
-    FROM "EmailExtraction" ex
-    JOIN "Email" em ON em.id = ex."emailId"
+    FROM "EmailExtraction" ex JOIN "Email" em ON em.id = ex."emailId"
    WHERE ex."userId" IS DISTINCT FROM em."userId";
 
   SELECT count(*) INTO bad_attachments
-    FROM "Attachment" a
-    JOIN "Email" em ON em.id = a."emailId"
+    FROM "Attachment" a JOIN "Email" em ON em.id = a."emailId"
    WHERE a."userId" IS DISTINCT FROM em."userId";
 
-  IF bad_emails > 0 OR bad_updates > 0 OR bad_extractions > 0 OR bad_attachments > 0 THEN
+  IF bad_emails + bad_updates + bad_extractions + bad_attachments > 0 THEN
     RAISE EXCEPTION
-      'AC-5.9 backfill aborted: ownership disagrees with parent — Email/GmailAccount: %, EventUpdate/Event: %, EmailExtraction/Email: %, Attachment/Email: %.',
+      'Ownership backfill inconsistent — Email/GmailAccount: %, EventUpdate/Event: %, EmailExtraction/Email: %, Attachment/Email: %. The composite foreign keys in the next migration would reject this data.',
       bad_emails, bad_updates, bad_extractions, bad_attachments;
   END IF;
 END $$;
 
--- ---------------------------------------------------------------------------
--- 5. Verification — the constraint the next migration adds to Event
--- ---------------------------------------------------------------------------
--- `Event.eventKey` becomes unique per owner. It is globally unique today, so
--- this cannot fail — but it is asserted rather than assumed, because a failure
--- here is recoverable and a failure inside the constraint migration is not.
-
 DO $$
 DECLARE
-  duplicate_keys int;
+  duplicate_keys bigint;
 BEGIN
   SELECT count(*) INTO duplicate_keys FROM (
     SELECT "userId", "eventKey" FROM "Event" GROUP BY 1, 2 HAVING count(*) > 1
@@ -179,7 +221,7 @@ BEGIN
 
   IF duplicate_keys > 0 THEN
     RAISE EXCEPTION
-      'AC-5.9 backfill aborted: % (userId, eventKey) pairs are duplicated; the unique constraint in the next migration would fail.',
+      'Ownership backfill produced % duplicated (userId, eventKey) pair(s); the unique constraint in the next migration would fail.',
       duplicate_keys;
   END IF;
 END $$;

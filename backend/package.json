@@ -10,6 +10,10 @@
     "build": "prisma generate && tsc && node scripts/fix-esm-imports.js",
     "start": "node dist/src/server.js",
     "prisma:generate": "prisma generate",
+    "migration:verify": "tsx scripts/migration/verify.ts",
+    "migration:cleanup": "tsx scripts/migration/cleanup.ts",
+    "migration:claim": "tsx scripts/migration/claim-legacy-data.ts",
+    "migration:typecheck": "tsc -p scripts/migration/tsconfig.json",
     "test": "jest",
     "test:redis": "tsx src/infrastructure/redis/test.ts"
   },
@@ -41,6 +45,7 @@
     "@types/express-session": "^1.19.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.0",
+    "@types/pg": "^8.11.11",
     "@types/supertest": "^7.2.0",
     "jest": "^30.3.0",
     "nodemon": "^3.1.14",
