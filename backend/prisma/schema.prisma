@@ -20,10 +20,11 @@ datasource db {
 // no unique constraint for the same reason; it is a display and contact
 // attribute, indexed only for lookup.
 //
-// AC-5.2 adds the back-relations below. They are the opposite side of the
-// nullable `userId` columns on each child. Ownership is not yet enforced: every
-// `userId` is optional and every existing row has NULL. AC-5.10 backfills them
-// and makes them required.
+// The back-relations below are the opposite side of the `userId` column on each
+// child. As of AC-5.9 ownership is mandatory: every `userId` is NOT NULL, and
+// each child that has a tenant-scoped parent reaches this row through a
+// composite foreign key on (parentId, userId), so a record cannot disagree with
+// its parent's owner (RFC-001 §12.3).
 model User {
   id       Int    @id @default(autoincrement())
   publicId String @unique @default(uuid())
@@ -51,9 +52,7 @@ model User {
 model Event {
   id Int @id @default(autoincrement())
 
-  // Nullable during the expand phase (RFC-001 §19 Phase 1). Nothing reads it
-  // yet; recognition queries remain unscoped until AC-5.8.
-  userId Int?
+  userId Int
 
   company String
   stage   String
@@ -61,7 +60,10 @@ model Event {
   time    String?
   venue   String?
 
-  eventKey String @unique
+  // Unique per owner, not globally. Two students receiving the same placement
+  // broadcast produce the same key and must still hold two distinct Events
+  // (RFC-001 §7.4).
+  eventKey String
 
   confidence   Float   @default(0)
   status       String  @default("scheduled")
@@ -72,9 +74,11 @@ model Event {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user    User?         @relation(fields: [userId], references: [id])
+  user    User          @relation(fields: [userId], references: [id])
   updates EventUpdate[]
 
+  @@unique([userId, eventKey])
+  @@unique([id, userId])
   @@index([userId, date])
   @@index([userId, status])
 }
@@ -82,7 +86,7 @@ model Event {
 model EventUpdate {
   id Int @id @default(autoincrement())
 
-  userId Int?
+  userId Int
 
   eventId  Int
   field    String
@@ -91,8 +95,10 @@ model EventUpdate {
 
   updatedAt DateTime @default(now())
 
-  user  User?  @relation(fields: [userId], references: [id])
-  event Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id])
+  // Composite: an EventUpdate whose owner differs from its Event's owner is now
+  // unrepresentable rather than merely incorrect.
+  event Event @relation(fields: [eventId, userId], references: [id, userId], onDelete: Cascade)
 
   @@index([userId, eventId])
 }
@@ -101,7 +107,7 @@ model Email {
   id             Int     @id @default(autoincrement())
   gmailMessageId String? @unique
 
-  userId Int?
+  userId Int
 
   // The Gmail account that synced this email. Optional so pre-existing rows
   // (synced before accounts were tracked) remain valid; every newly synced
@@ -119,11 +125,15 @@ model Email {
 
   createdAt DateTime @default(now())
 
-  user         User?             @relation(fields: [userId], references: [id])
-  gmailAccount GmailAccount?     @relation(fields: [gmailAccountId], references: [id])
+  user         User              @relation(fields: [userId], references: [id])
+  // Composite where the mailbox is known. `gmailAccountId` stays nullable —
+  // emails accepted through the manual ingestion route have no mailbox — and a
+  // NULL there simply leaves the constraint unchecked for that row.
+  gmailAccount GmailAccount?     @relation(fields: [gmailAccountId, userId], references: [id, userId])
   extractions  EmailExtraction[]
   attachments  Attachment[]
 
+  @@unique([id, userId])
   @@index([gmailAccountId])
   @@index([userId, receivedAt])
   @@index([userId, processingStatus])
@@ -139,7 +149,7 @@ model Attachment {
   // what makes tenant divergence from the owning Email unrepresentable. A direct
   // User relation would add a second, weaker path to the same fact — which is
   // why RFC-001 §12.1 lists no back-relation for this model.
-  userId Int?
+  userId Int
 
   gmailAttachmentId String
   filename          String
@@ -166,7 +176,7 @@ model Attachment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  email Email @relation(fields: [emailId, userId], references: [id, userId], onDelete: Cascade)
 
   @@index([emailId])
 }
@@ -177,7 +187,7 @@ model EmailExtraction {
   emailId Int
 
   // See Attachment.userId — same pattern, same reason.
-  userId Int?
+  userId Int
 
   company String?
   stage   String?
@@ -194,7 +204,7 @@ model EmailExtraction {
 
   createdAt DateTime @default(now())
 
-  email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  email Email @relation(fields: [emailId, userId], references: [id, userId], onDelete: Cascade)
 }
 
 // The mailbox provider this connection represents (RFC-001 §12.2). A
@@ -213,7 +223,7 @@ enum MailProvider {
 
 model GmailAccount {
   id     Int @id @default(autoincrement())
-  userId Int?
+  userId Int
 
   provider MailProvider @default(GOOGLE)
 
@@ -223,8 +233,11 @@ model GmailAccount {
   connectedAt  DateTime @default(now())
   createdAt    DateTime @default(now())
 
-  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   emails Email[]
 
+  // Composite-FK anchor. Exists so children can reference (id, userId) together
+  // and therefore cannot disagree with this row's owner (RFC-001 §12.3).
+  @@unique([id, userId])
   @@index([userId])
 }

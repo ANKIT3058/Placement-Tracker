@@ -10,20 +10,23 @@ import {
 } from "../event.service";
 import * as repo from "../event.repository";
 import { prisma } from "../../../lib/prisma";
-import { UNOWNED } from "../../auth/tenant-context";
 
-// AC-5.7. These assertions predate ownership and describe records that have
-// none, so the suite runs in the null tenant — the tenant every pre-existing
-// record belongs to. Wrapped rather than threaded through each call site so the
-// existing assertions stay byte-identical.
+// AC-5.9. Ownership is mandatory, so these suites run as a concrete tenant
+// rather than the null tenant they used during the migration window. The value
+// is arbitrary — what these assertions check is that the owner is threaded
+// through unchanged, not which owner it is.
+const TENANT = { userId: 1 };
+
+// Wrapped rather than threaded through each call site so the existing
+// assertions stay byte-identical.
 const updateEventService = (
   eventId: number,
   existing: any,
   incoming: any,
-) => updateEventServiceScoped(UNOWNED, eventId, existing, incoming);
+) => updateEventServiceScoped(TENANT, eventId, existing, incoming);
 
 const updateEventManuallyService = (id: number, data: any) =>
-  updateEventManuallyServiceScoped(UNOWNED, id, data);
+  updateEventManuallyServiceScoped(TENANT, id, data);
 
 describe("Event Service - Venue Logic", () => {
   test("explicit null should clear venue", () => {

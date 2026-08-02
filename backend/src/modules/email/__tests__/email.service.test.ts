@@ -33,16 +33,20 @@ jest.mock("../../event/event.service");
 import { processEmail as processEmailScoped } from "../email.service";
 import * as extraction from "../../extraction/extraction.service";
 import * as eventService from "../../event/event.service";
-import { UNOWNED } from "../../auth/tenant-context";
 import * as matching from "../../matching/matching.service";
 import * as emailRepo from "../email.repository";
 import { EMAIL_STATUS } from "../../../shared/constants/email.constants";
 
-// AC-5.7. These assertions predate ownership and describe records that have
-// none, so the suite runs in the null tenant. Wrapped rather than threaded
-// through each call site so the existing assertions stay byte-identical.
+// AC-5.9. Ownership is mandatory, so these suites run as a concrete tenant
+// rather than the null tenant they used during the migration window. The value
+// is arbitrary — what these assertions check is that the owner is threaded
+// through unchanged, not which owner it is.
+const TENANT = { userId: 1 };
+
+// Wrapped rather than threaded through each call site so the existing
+// assertions stay byte-identical.
 const processEmail = (email: any, emailId: number) =>
-  processEmailScoped(UNOWNED, email, emailId);
+  processEmailScoped(TENANT, email, emailId);
 
 describe("Email Service - Low Confidence Handling", () => {
   beforeEach(() => {
@@ -75,7 +79,7 @@ describe("Email Service - Low Confidence Handling", () => {
     );
 
     expect(eventService.createEventService).toHaveBeenCalledWith(
-      UNOWNED,
+      TENANT,
       expect.objectContaining({
         status: "review",
       }),
@@ -127,7 +131,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     expect(matching.matchEventV2).not.toHaveBeenCalled();
     // Recorded as the ABANDON outcome the handbook specifies.
     expect(emailRepo.updateEmailStatus).toHaveBeenCalledWith(
-      UNOWNED,
+      TENANT,
       1,
       EMAIL_STATUS.IGNORED,
     );
@@ -150,7 +154,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     expect(eventService.createEventService).not.toHaveBeenCalled();
     expect(matching.matchEventV2).not.toHaveBeenCalled();
     expect(emailRepo.updateEmailStatus).toHaveBeenCalledWith(
-      UNOWNED,
+      TENANT,
       1,
       EMAIL_STATUS.IGNORED,
     );
@@ -184,7 +188,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     );
 
     expect(matching.matchEventV2).toHaveBeenCalledWith(
-      UNOWNED,
+      TENANT,
       expect.objectContaining({ company: "amazon" }),
     );
     expect(eventService.createEventService).toHaveBeenCalled();
@@ -221,7 +225,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     );
 
     expect(eventService.createEventService).toHaveBeenCalledWith(
-      UNOWNED,
+      TENANT,
       expect.objectContaining({ status: "review" }),
     );
     expect(result.status).toBe("review");
@@ -238,7 +242,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
 
     expect(eventService.createEventService).not.toHaveBeenCalled();
     expect(emailRepo.updateEmailStatus).toHaveBeenCalledWith(
-      UNOWNED,
+      TENANT,
       1,
       EMAIL_STATUS.IGNORED,
     );

@@ -3,10 +3,9 @@ import type { AttachmentMetadata } from "../attachment/attachment.types.js";
 export interface EmailInput {
   gmailMessageId?: string | null;
   gmailAccountId?: number | null;
-  // Owner, copied from the mailbox that produced this observation. Nullable
-  // while ownership is nullable; an Email ingested from an unlinked mailbox has
-  // no owner rather than a guessed one.
-  userId?: number | null;
+  // Owner. Required as of AC-5.9: the column is NOT NULL, so an Email cannot be
+  // created without naming the User it belongs to.
+  userId: number;
   subject: string;
   body: string;
   sender: string;
@@ -20,5 +19,5 @@ export interface EmailInput {
 // detectable at all.
 export type EmailJobData = {
   emailId: number;
-  userId?: number | null;
+  userId?: number;
 };

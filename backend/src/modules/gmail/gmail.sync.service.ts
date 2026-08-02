@@ -78,9 +78,9 @@ export type SyncableAccount = {
   email: string;
   refreshToken: string;
   historyId: string | null;
-  // Owner of the mailbox, propagated onto every Email it produces. Nullable
-  // until AC-5.11: a mailbox connected before ownership tracking has none.
-  userId: number | null;
+  // Owner of the mailbox, propagated onto every Email it produces. Required as
+  // of AC-5.9 — every mailbox has an owner.
+  userId: number;
 };
 
 const isHistoryIdExpired = (error: unknown): boolean => {

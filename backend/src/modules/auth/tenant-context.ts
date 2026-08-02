@@ -18,30 +18,21 @@ export type TenantContext = {
   userId: number;
 };
 
-// The owner of a record in the asynchronous pipeline, where ownership is still
-// nullable.
+// The owner of a persisted record.
 //
-// `TenantContext` comes from a session and always names a real User.
-// `OwnershipContext` comes from a persisted row, and `Email.userId` is nullable
-// until AC-5.11 backfills it and makes it required. A record ingested before
-// ownership was recorded has no owner, and `null` is the honest representation
-// of that — not a reason to fall back to an unscoped query.
+// AC-5.9 collapsed this onto `TenantContext`. It existed only for the migration
+// window in which `userId` was nullable and a record could genuinely have no
+// owner; every `userId` is now NOT NULL, so an owner derived from a row is the
+// same kind of thing as an owner derived from a session, and the two types
+// describe one concept.
 //
-// `null` is a tenant in its own right: unowned records match only other unowned
-// records, which is exactly the pre-existing behaviour for pre-existing data.
-// A `TenantContext` is structurally assignable to this type, so an authenticated
-// caller can be passed wherever an owner is expected.
-//
-// This type disappears at AC-5.11. Once `userId` is NOT NULL there is only one
-// kind of owner, and every signature below collapses onto `TenantContext`.
-export type OwnershipContext = {
-  userId: number | null;
-};
-
-// The owner of records that predate ownership tracking. Named rather than
-// written inline as `{ userId: null }` so every such call site is greppable when
-// AC-5.11 removes them.
-export const UNOWNED: OwnershipContext = { userId: null };
+// Kept as an alias rather than deleted because the distinction it marks is still
+// real at the call site: a `TenantContext` is what the caller *claims* via their
+// session, an `OwnershipContext` is what a row *records*. They must be produced
+// differently — the second is re-derived from the database and never trusted
+// from a request or a queue payload (RFC-001 §9.5) — even though they now carry
+// the same shape.
+export type OwnershipContext = TenantContext;
 
 // Derive the tenant from an authenticated request.
 //

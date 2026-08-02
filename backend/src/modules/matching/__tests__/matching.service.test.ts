@@ -1,8 +1,13 @@
 import { matchEventV2 as matchEventV2Scoped } from "../matching.service";
-import { UNOWNED } from "../../auth/tenant-context";
 import * as repo from "../../event/event.repository";
 import * as matchingUtils from "../matching.utils";
 import { LOOSE_MATCH_WINDOW_DAYS } from "../../../shared/constants/config";
+
+// AC-5.9. Ownership is mandatory, so these suites run as a concrete tenant
+// rather than the null tenant they used during the migration window. The value
+// is arbitrary — what these assertions check is that the owner is threaded
+// through unchanged, not which owner it is.
+const TENANT = { userId: 1 };
 
 jest.mock("../../event/event.repository", () => ({
   findNearbyEvents: jest.fn(),
@@ -33,17 +38,12 @@ const mockScoreEventMatch = matchingUtils.scoreEventMatch as jest.Mock;
 const scoredCandidateIds = (): number[] =>
   mockScoreEventMatch.mock.calls.map((call: any[]) => call[0].event.id);
 
-// AC-5.7. Recognition is now bounded by owner. Every assertion in this file
-// predates ownership and describes records that have none, so the suite runs in
-// the null tenant — which is exactly the tenant every pre-existing record
-// belongs to, and therefore exactly the behaviour these tests were written
-// against.
-//
-// Wrapped here rather than editing the call sites individually: this file is the
+// Recognition is bounded by owner. Wrapped here rather than editing the call
+// sites individually: this file is the
 // ADR-006 and AC-1 regression suite, and rewriting forty assertions to thread a
 // parameter would be a diff large enough for a real behavioural change to hide
 // inside. The assertions stay byte-identical.
-const matchEventV2 = (data: any) => matchEventV2Scoped(UNOWNED, data);
+const matchEventV2 = (data: any) => matchEventV2Scoped(TENANT, data);
 
 describe("matchEventV2", () => {
   beforeEach(() => {
@@ -389,7 +389,7 @@ describe("matchEventV2 - loose tier temporal bound (AC-1 / D-2)", () => {
   it("requests the configured window from the repository", async () => {
     await matchEventV2(incoming());
 
-    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(UNOWNED, {
+    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(TENANT, {
       company: "amazon",
       stage: "OA",
       date: OBSERVED_ON,
@@ -713,7 +713,7 @@ describe("matchEventV2 - tier 1 and tier 3 unaffected by AC-2", () => {
 
     const result = await matchEventV2(incoming({ stage: "unknown" }));
 
-    expect(mockFindByEventKey).toHaveBeenCalledWith(UNOWNED, "amazon|unknown|2026-09-20");
+    expect(mockFindByEventKey).toHaveBeenCalledWith(TENANT, "amazon|unknown|2026-09-20");
     expect(result).toMatchObject({ matchType: "exact", confidence: 1.0 });
   });
 
@@ -734,7 +734,7 @@ describe("matchEventV2 - tier 1 and tier 3 unaffected by AC-2", () => {
     ]);
 
     expect(await matchEventV2(incoming())).toBeNull();
-    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(UNOWNED, {
+    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(TENANT, {
       company: "amazon",
       stage: "OA",
       date: OBSERVED_ON,
@@ -808,7 +808,7 @@ describe("matchEventV2 - tenant scoping (AC-5.7 / RFC-001 §7.4)", () => {
   });
 
   it("never falls back to an unscoped query when the owner is null", async () => {
-    await matchEventV2Scoped(UNOWNED, observation);
+    await matchEventV2Scoped(TENANT, observation);
 
     for (const mock of [
       mockFindByEventKey,
@@ -818,7 +818,7 @@ describe("matchEventV2 - tenant scoping (AC-5.7 / RFC-001 §7.4)", () => {
       expect(mock).toHaveBeenCalled();
       // An unowned observation is scoped to the null tenant — it is not a
       // licence to query across every tenant.
-      expect(mock.mock.calls[0][0]).toEqual(UNOWNED);
+      expect(mock.mock.calls[0][0]).toEqual(TENANT);
     }
   });
 });

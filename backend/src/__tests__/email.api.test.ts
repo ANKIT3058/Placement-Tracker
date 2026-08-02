@@ -10,6 +10,17 @@ jest.mock("../lib/prisma", () => ({
 // Queue / ioredis connection (queues.ts → redis.ts), which auto-connects on
 // construction and leaks an open TCP socket that prevents Jest from exiting.
 jest.mock("../infrastructure/queue/queues", () => ({ emailQueue: { add: jest.fn() } }));
+// AC-5.9. POST /email is authenticated now, because `Email.userId` is NOT NULL
+// and an anonymous caller has no owner to attribute the row to. This suite is
+// about the ingestion contract, not about authentication, so `requireAuth` is
+// replaced with a stub that supplies a caller. Whether the real middleware
+// admits or refuses a request is exercised where that behaviour lives.
+jest.mock("../modules/auth/auth.middleware", () => ({
+  requireAuth: (req: any, _res: any, next: any) => {
+    req.user = { id: 1, publicId: "test-user", googleSub: "sub-1", email: "test@example.com", name: null, imageUrl: null };
+    next();
+  },
+}));
 import request from "supertest";
 import app from "../app";
 

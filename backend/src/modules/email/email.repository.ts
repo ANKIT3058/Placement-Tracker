@@ -14,7 +14,7 @@ export const createEmail = async (email: EmailInput) => {
   // must agree: AC-5.11 attaches a composite foreign key to Email(id, userId)
   // that makes disagreement unrepresentable (RFC-001 §12.3), and writing them
   // together now means that migration has nothing to reconcile.
-  const userId = email.userId ?? null;
+  const userId = email.userId;
 
   return prisma.email.create({
     data: {
