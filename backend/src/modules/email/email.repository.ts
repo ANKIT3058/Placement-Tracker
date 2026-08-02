@@ -9,10 +9,17 @@ export const createEmail = async (email: EmailInput) => {
   // metadata all persist, or none do. Duplicate emails are guarded upstream in
   // the sync flow (existing gmailMessageId short-circuits before create), so
   // attachment metadata is never inserted twice.
+  // Ownership is copied onto the Attachment rows as well as the Email. They
+  // must agree: AC-5.11 attaches a composite foreign key to Email(id, userId)
+  // that makes disagreement unrepresentable (RFC-001 §12.3), and writing them
+  // together now means that migration has nothing to reconcile.
+  const userId = email.userId ?? null;
+
   return prisma.email.create({
     data: {
       gmailMessageId: email.gmailMessageId,
       gmailAccountId: email.gmailAccountId,
+      userId,
       subject: email.subject,
       body: email.body,
       sender: email.sender,
@@ -23,6 +30,7 @@ export const createEmail = async (email: EmailInput) => {
               filename: attachment.filename,
               mimeType: attachment.mimeType,
               size: attachment.size,
+              userId,
             })),
           }
         : undefined,

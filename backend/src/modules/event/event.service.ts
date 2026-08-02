@@ -4,20 +4,25 @@ import { createEvent } from "./event.repository.js";
 import { generateEventKey } from "./event.utils.js";
 import { toUTCDate, toISTKey } from "../../shared/utils/date.js";
 import type { CreateEventInput } from "./event.types.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
 // CREATE
-export const createEventService = async (data: CreateEventInput) => {
+export const createEventService = async (
+  owner: OwnershipContext,
+  data: CreateEventInput,
+) => {
   const eventKey = generateEventKey({
     company: data.company,
     stage: data.stage,
     date: data.date,
   });
 
-  return createEvent(data, eventKey);
+  return createEvent(owner, data, eventKey);
 };
 
 // UPDATE
 export const updateEventService = async (
+  owner: OwnershipContext,
   eventId: number,
   existing: any,
   incoming: CreateEventInput,
@@ -102,6 +107,11 @@ export const updateEventService = async (
       await tx.eventUpdate.create({
         data: {
           eventId,
+          // Owner carried onto the history row. It must equal the Event's
+          // owner: AC-5.11 attaches a composite foreign key to
+          // Event(id, userId) that makes any other value unrepresentable
+          // (RFC-001 §12.3).
+          userId: owner.userId,
           field: change.field,
           oldValue: change.oldValue,
           newValue: change.newValue,

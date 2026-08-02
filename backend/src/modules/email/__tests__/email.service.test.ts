@@ -30,12 +30,19 @@ jest.mock("../email.repository", () => ({
 jest.mock("../../extraction/extraction.service");
 jest.mock("../../event/event.service");
 
-import { processEmail } from "../email.service";
+import { processEmail as processEmailScoped } from "../email.service";
 import * as extraction from "../../extraction/extraction.service";
 import * as eventService from "../../event/event.service";
+import { UNOWNED } from "../../auth/tenant-context";
 import * as matching from "../../matching/matching.service";
 import * as emailRepo from "../email.repository";
 import { EMAIL_STATUS } from "../../../shared/constants/email.constants";
+
+// AC-5.7. These assertions predate ownership and describe records that have
+// none, so the suite runs in the null tenant. Wrapped rather than threaded
+// through each call site so the existing assertions stay byte-identical.
+const processEmail = (email: any, emailId: number) =>
+  processEmailScoped(UNOWNED, email, emailId);
 
 describe("Email Service - Low Confidence Handling", () => {
   beforeEach(() => {
@@ -68,6 +75,7 @@ describe("Email Service - Low Confidence Handling", () => {
     );
 
     expect(eventService.createEventService).toHaveBeenCalledWith(
+      UNOWNED,
       expect.objectContaining({
         status: "review",
       }),
@@ -174,6 +182,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     );
 
     expect(matching.matchEventV2).toHaveBeenCalledWith(
+      UNOWNED,
       expect.objectContaining({ company: "amazon" }),
     );
     expect(eventService.createEventService).toHaveBeenCalled();
@@ -210,6 +219,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     );
 
     expect(eventService.createEventService).toHaveBeenCalledWith(
+      UNOWNED,
       expect.objectContaining({ status: "review" }),
     );
     expect(result.status).toBe("review");

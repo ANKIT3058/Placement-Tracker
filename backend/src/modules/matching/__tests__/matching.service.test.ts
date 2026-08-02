@@ -1,4 +1,5 @@
-import { matchEventV2 } from "../matching.service";
+import { matchEventV2 as matchEventV2Scoped } from "../matching.service";
+import { UNOWNED } from "../../auth/tenant-context";
 import * as repo from "../../event/event.repository";
 import * as matchingUtils from "../matching.utils";
 import { LOOSE_MATCH_WINDOW_DAYS } from "../../../shared/constants/config";
@@ -31,6 +32,18 @@ const mockScoreEventMatch = matchingUtils.scoreEventMatch as jest.Mock;
 // The set of candidate ids `scoreEventMatch` was actually invoked with.
 const scoredCandidateIds = (): number[] =>
   mockScoreEventMatch.mock.calls.map((call: any[]) => call[0].event.id);
+
+// AC-5.7. Recognition is now bounded by owner. Every assertion in this file
+// predates ownership and describes records that have none, so the suite runs in
+// the null tenant — which is exactly the tenant every pre-existing record
+// belongs to, and therefore exactly the behaviour these tests were written
+// against.
+//
+// Wrapped here rather than editing the call sites individually: this file is the
+// ADR-006 and AC-1 regression suite, and rewriting forty assertions to thread a
+// parameter would be a diff large enough for a real behavioural change to hide
+// inside. The assertions stay byte-identical.
+const matchEventV2 = (data: any) => matchEventV2Scoped(UNOWNED, data);
 
 describe("matchEventV2", () => {
   beforeEach(() => {
@@ -202,7 +215,10 @@ describe("matchEventV2", () => {
 // the resulting candidate set drives the right decision.
 const looseCandidateFake =
   (store: any[]) =>
-  ({ company, stage, date, windowDays }: any) => {
+  // AC-5.7: `findByCompanyAndStage` now takes the owner first. The fake ignores
+  // it — every record in `store` is unowned, matching the tenant this suite runs
+  // in — but it must accept it, or the query object lands in the wrong position.
+  (_owner: any, { company, stage, date, windowDays }: any) => {
     const anchor = new Date(date).getTime();
 
     return Promise.resolve(
@@ -373,7 +389,7 @@ describe("matchEventV2 - loose tier temporal bound (AC-1 / D-2)", () => {
   it("requests the configured window from the repository", async () => {
     await matchEventV2(incoming());
 
-    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith({
+    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(UNOWNED, {
       company: "amazon",
       stage: "OA",
       date: OBSERVED_ON,
@@ -697,7 +713,7 @@ describe("matchEventV2 - tier 1 and tier 3 unaffected by AC-2", () => {
 
     const result = await matchEventV2(incoming({ stage: "unknown" }));
 
-    expect(mockFindByEventKey).toHaveBeenCalledWith("amazon|unknown|2026-09-20");
+    expect(mockFindByEventKey).toHaveBeenCalledWith(UNOWNED, "amazon|unknown|2026-09-20");
     expect(result).toMatchObject({ matchType: "exact", confidence: 1.0 });
   });
 
@@ -718,11 +734,91 @@ describe("matchEventV2 - tier 1 and tier 3 unaffected by AC-2", () => {
     ]);
 
     expect(await matchEventV2(incoming())).toBeNull();
-    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith({
+    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(UNOWNED, {
       company: "amazon",
       stage: "OA",
       date: OBSERVED_ON,
       windowDays: LOOSE_MATCH_WINDOW_DAYS,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AC-5.7 / RFC-001 §7.4. Tenant bounds the candidate universe.
+//
+// These assert propagation, not isolation: that the owner reaches every
+// candidate query, at every tier, unchanged. Whether the database then honours
+// it is a property of the query, verified against a real schema by the
+// tenant-isolation suite in a later AC.
+//
+// The engine's decisions are deliberately not re-tested here. Nothing about
+// admission or ranking changed, and duplicating those assertions under a
+// non-null owner would imply otherwise.
+// ---------------------------------------------------------------------------
+
+describe("matchEventV2 - tenant scoping (AC-5.7 / RFC-001 §7.4)", () => {
+  const OWNER = { userId: 42 };
+
+  const observation = {
+    company: "amazon",
+    stage: "OA",
+    date: "2026-09-20",
+    confidence: 0.8,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockFindByEventKey.mockResolvedValue(null);
+    mockFindNearbyEvents.mockResolvedValue([]);
+    mockFindByCompanyAndStage.mockResolvedValue([]);
+  });
+
+  it("scopes the tier 1 identity-key lookup to the owner", async () => {
+    await matchEventV2Scoped(OWNER, observation);
+
+    expect(mockFindByEventKey).toHaveBeenCalledWith(
+      OWNER,
+      "amazon|OA|2026-09-20",
+    );
+  });
+
+  it("scopes the tier 2 candidate query to the owner", async () => {
+    await matchEventV2Scoped(OWNER, observation);
+
+    expect(mockFindNearbyEvents).toHaveBeenCalledWith(
+      OWNER,
+      expect.objectContaining({ company: "amazon" }),
+    );
+  });
+
+  it("scopes the tier 3 uniqueness query to the owner", async () => {
+    await matchEventV2Scoped(OWNER, observation);
+
+    // Tier 3 infers identity from `looseMatches.length === 1`. That count is
+    // only an identity signal if it is counted within one tenant, so this is
+    // the query where scoping carries the most weight.
+    expect(mockFindByCompanyAndStage).toHaveBeenCalledWith(
+      OWNER,
+      expect.objectContaining({
+        company: "amazon",
+        stage: "OA",
+        windowDays: LOOSE_MATCH_WINDOW_DAYS,
+      }),
+    );
+  });
+
+  it("never falls back to an unscoped query when the owner is null", async () => {
+    await matchEventV2Scoped(UNOWNED, observation);
+
+    for (const mock of [
+      mockFindByEventKey,
+      mockFindNearbyEvents,
+      mockFindByCompanyAndStage,
+    ]) {
+      expect(mock).toHaveBeenCalled();
+      // An unowned observation is scoped to the null tenant — it is not a
+      // licence to query across every tenant.
+      expect(mock.mock.calls[0][0]).toEqual(UNOWNED);
+    }
   });
 });

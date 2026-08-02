@@ -5,11 +5,22 @@ jest.mock("../event.repository", () => ({
 
 import { detectChanges } from "../event.service";
 import {
-  updateEventService,
+  updateEventService as updateEventServiceScoped,
   updateEventManuallyService,
 } from "../event.service";
 import * as repo from "../event.repository";
 import { prisma } from "../../../lib/prisma";
+import { UNOWNED } from "../../auth/tenant-context";
+
+// AC-5.7. These assertions predate ownership and describe records that have
+// none, so the suite runs in the null tenant — the tenant every pre-existing
+// record belongs to. Wrapped rather than threaded through each call site so the
+// existing assertions stay byte-identical.
+const updateEventService = (
+  eventId: number,
+  existing: any,
+  incoming: any,
+) => updateEventServiceScoped(UNOWNED, eventId, existing, incoming);
 
 describe("Event Service - Venue Logic", () => {
   test("explicit null should clear venue", () => {

@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { createEventService } from "./event.service.js";
+import { requireTenantContext } from "../auth/tenant-context.js";
 import {
   getEventsService,
   getEventByIdService,
@@ -8,7 +9,11 @@ import {
 
 export const createEventController = async (req: Request, res: Response) => {
   try {
-    const event = await createEventService(req.body);
+    // Ownership comes from the session, never from the request body. A `userId`
+    // in the payload is not read and is not trusted (RFC-001 §15.3).
+    const context = requireTenantContext(req);
+
+    const event = await createEventService(context, req.body);
     res.status(201).json(event);
   } catch (error) {
     console.error(error);

@@ -6,13 +6,21 @@ import { CONFIDENCE_THRESHOLD } from "../../shared/constants/config.js";
 import { createExtraction } from "../extraction/extraction.repository.js";
 import { updateEmailStatus } from "./email.repository.js";
 import { EMAIL_STATUS } from "../../shared/constants/email.constants.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
 import {
   createEventService,
   updateEventService,
 } from "../event/event.service.js";
 
-export const processEmail = async (email: EmailInput, emailId: number) => {
+// `owner` bounds every tenant-scoped read and write below. It is threaded
+// explicitly rather than read from ambient state so that a call site cannot
+// omit it and still compile (RFC-001 §9.2).
+export const processEmail = async (
+  owner: OwnershipContext,
+  email: EmailInput,
+  emailId: number,
+) => {
   if (!email) {
     throw new Error("Email text is required");
   }
@@ -29,6 +37,7 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
   const enrichedData = { ...data, confidence };
   await createExtraction({
     emailId,
+    userId: owner.userId,
 
     company: enrichedData.company,
     stage: enrichedData.stage,
@@ -67,13 +76,13 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
     return;
   }
 
-  const matchResult = await matchEventV2(enrichedData);
+  const matchResult = await matchEventV2(owner, enrichedData);
 
   if (isLowConfidence) {
     console.log("LOW CONFIDENCE DETECTED");
 
     // Option 1 (safe): only create, no update
-    return createEventService({
+    return createEventService(owner, {
       ...enrichedData,
       status: "review",
       reviewReason: `Low confidence: missing ${
@@ -90,6 +99,7 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
 
   if (matchResult && matchResult.event) {
     const result = updateEventService(
+      owner,
       matchResult.event.id,
       matchResult.event,
       enrichedData,
@@ -100,7 +110,7 @@ export const processEmail = async (email: EmailInput, emailId: number) => {
     return result;
   }
 
-  const result = await createEventService(enrichedData);
+  const result = await createEventService(owner, enrichedData);
   await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
   return result;
 };

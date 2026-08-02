@@ -39,13 +39,20 @@ export const syncSingleMessage = async (
   const savedEmail = await createEmail({
     gmailMessageId: parsed.messageId,
     gmailAccountId: account.id,
+    // Ownership flows from the mailbox that produced the observation. A mailbox
+    // that has not been linked to a User yet yields an unowned Email rather
+    // than a guess.
+    userId: account.userId,
     subject: parsed.subject ?? "",
     body: parsed.body || parsed.snippet || "",
     sender: parsed.sender ?? "",
     attachments: parsed.attachments,
   });
 
-  await enqueueEmailProcessing(savedEmail.id);
+  await enqueueEmailProcessing({
+    emailId: savedEmail.id,
+    userId: savedEmail.userId,
+  });
 
   return { status: "created", emailId: savedEmail.id };
 };
@@ -71,6 +78,9 @@ export type SyncableAccount = {
   email: string;
   refreshToken: string;
   historyId: string | null;
+  // Owner of the mailbox, propagated onto every Email it produces. Nullable
+  // until AC-5.11: a mailbox connected before ownership tracking has none.
+  userId: number | null;
 };
 
 const isHistoryIdExpired = (error: unknown): boolean => {

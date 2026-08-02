@@ -12,16 +12,31 @@ import {
   type IdentityRelation,
 } from "./matching.utils.js";
 import { LOOSE_MATCH_WINDOW_DAYS } from "../../shared/constants/config.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
-export const matchEventV2 = async (data: {
-  company: string;
-  stage: string;
-  date: string;
-  confidence?: number;
-}) => {
+// TENANT BOUNDS THE CANDIDATE UNIVERSE (RFC-001 §7.4).
+//
+// `owner` is threaded into all three candidate queries and nowhere else. It does
+// not participate in admission or in ranking: it decides which records the
+// engine can see, not which of them it accepts.
+//
+// This matters most at tier 3, whose identity claim rests on `looseMatches.length
+// === 1` — uniqueness within a bounded range. That is a count over a set, and
+// without scoping it would be a count over every User's data, so the tier would
+// quietly stop firing as the user base grew. Scoping keeps the count meaning
+// what ADR-006 says it means.
+export const matchEventV2 = async (
+  owner: OwnershipContext,
+  data: {
+    company: string;
+    stage: string;
+    date: string;
+    confidence?: number;
+  },
+) => {
   // 1. Exact match
   const key = generateEventKey(data);
-  const exact = await findByEventKey(key);
+  const exact = await findByEventKey(owner, key);
 
   if (exact) {
     console.log({
@@ -35,7 +50,7 @@ export const matchEventV2 = async (data: {
   }
 
   // 2. Soft match (confidence-aware)
-  const softMatches = await findNearbyEvents({
+  const softMatches = await findNearbyEvents(owner, {
     company: data.company,
     date: data.date,
     windowDays: 3,
@@ -112,7 +127,7 @@ export const matchEventV2 = async (data: {
 
   // 3. Loose match (bounded: uniqueness only implies identity within a plausible
   // date range — see LOOSE_MATCH_WINDOW_DAYS)
-  const looseMatches = await findByCompanyAndStage({
+  const looseMatches = await findByCompanyAndStage(owner, {
     company: data.company,
     stage: data.stage,
     date: data.date,

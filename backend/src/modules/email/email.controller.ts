@@ -19,7 +19,14 @@ export const receiveEmailController = async (req: Request, res: Response) => {
       sender,
     });
 
-    await enqueueEmailProcessing(savedEmail.id);
+    // This route is still unauthenticated (AC-5.12 removes or gates it), so
+    // there is no owner to attribute the Email to. It is ingested unowned, and
+    // recognition therefore runs in the null tenant — matching only other
+    // unowned records, exactly as it did before ownership existed.
+    await enqueueEmailProcessing({
+      emailId: savedEmail.id,
+      userId: savedEmail.userId,
+    });
 
     return res.status(202).json({
       success: true,

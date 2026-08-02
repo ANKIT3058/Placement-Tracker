@@ -18,6 +18,31 @@ export type TenantContext = {
   userId: number;
 };
 
+// The owner of a record in the asynchronous pipeline, where ownership is still
+// nullable.
+//
+// `TenantContext` comes from a session and always names a real User.
+// `OwnershipContext` comes from a persisted row, and `Email.userId` is nullable
+// until AC-5.11 backfills it and makes it required. A record ingested before
+// ownership was recorded has no owner, and `null` is the honest representation
+// of that — not a reason to fall back to an unscoped query.
+//
+// `null` is a tenant in its own right: unowned records match only other unowned
+// records, which is exactly the pre-existing behaviour for pre-existing data.
+// A `TenantContext` is structurally assignable to this type, so an authenticated
+// caller can be passed wherever an owner is expected.
+//
+// This type disappears at AC-5.11. Once `userId` is NOT NULL there is only one
+// kind of owner, and every signature below collapses onto `TenantContext`.
+export type OwnershipContext = {
+  userId: number | null;
+};
+
+// The owner of records that predate ownership tracking. Named rather than
+// written inline as `{ userId: null }` so every such call site is greppable when
+// AC-5.11 removes them.
+export const UNOWNED: OwnershipContext = { userId: null };
+
 // Derive the tenant from an authenticated request.
 //
 // Throws rather than returning null. Reaching this without `req.user` means a

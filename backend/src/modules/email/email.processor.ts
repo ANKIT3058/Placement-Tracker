@@ -2,8 +2,15 @@ import { processEmail } from "./email.service.js";
 import { getEmailById, updateEmailStatus, markEmailFailed } from "./email.repository.js";
 import { EMAIL_STATUS } from "../../shared/constants/email.constants.js";
 import { enqueueAttachmentJobs } from "../attachment/attachment.service.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
-export const processEmailJob = async (emailId: number) => {
+// `owner` is derived by the worker from the persisted Email and passed down
+// explicitly. It is not re-derived here: one derivation, one place, so there is
+// exactly one answer to "who owns this work" per job (RFC-001 §9.5).
+export const processEmailJob = async (
+  owner: OwnershipContext,
+  emailId: number,
+) => {
   const email = await getEmailById(emailId);
 
   if (!email) {
@@ -13,7 +20,7 @@ export const processEmailJob = async (emailId: number) => {
   await updateEmailStatus(emailId, EMAIL_STATUS.PROCESSING);
 
   try {
-    await processEmail(email, emailId);
+    await processEmail(owner, email, emailId);
 
     await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
   } catch (error) {
