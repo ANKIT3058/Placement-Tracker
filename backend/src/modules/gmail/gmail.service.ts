@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import type { Credentials } from "google-auth-library";
 import type { AttachmentMetadata } from "../attachment/attachment.types.js";
+import type { GoogleIdentity } from "../user/user.types.js";
 
 export const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -8,23 +9,81 @@ export const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_REDIRECT_URI,
 );
 
+// The only issuers Google signs ID tokens as. Checked explicitly even though
+// google-auth-library also validates it, because RFC-001 §10.1 enumerates
+// issuer as a required check and a silent library default is not a check this
+// codebase can be shown to make.
+const GOOGLE_ISSUERS = ["accounts.google.com", "https://accounts.google.com"];
+
 export const generateAuthUrl = () => {
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
 
     prompt: "consent",
 
-    scope: ["https://www.googleapis.com/auth/gmail.readonly"],
+    // `openid` is what makes Google return an ID token; without it the response
+    // carries an access token only and there is no signed identity to verify.
+    // The two userinfo scopes populate the email and profile claims the User
+    // record is built from.
+    scope: [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/gmail.readonly",
+    ],
   });
 };
 
 export const getTokens = async (code: string) => {
   const { tokens } = await oauth2Client.getToken(code);
 
-  console.log("TOKENS");
-  console.log(tokens);
-
+  // Deliberately not logged. This object now carries a refresh token and an ID
+  // token; printing it writes long-lived mailbox credentials to stdout and into
+  // whatever aggregates it (RFC-001 §13.2).
   return tokens;
+};
+
+// Verify a Google ID token and reduce it to the claims this system trusts.
+//
+// `verifyIdToken` checks the signature against Google's published keys and
+// validates `aud` and `exp`. A userinfo round-trip is not a substitute: it
+// proves only that *some* access token is valid, not that this response is a
+// signed statement about this client's user.
+export const verifyGoogleIdToken = async (
+  idToken: string,
+): Promise<GoogleIdentity> => {
+  const ticket = await oauth2Client.verifyIdToken({
+    idToken,
+    audience: process.env.GOOGLE_CLIENT_ID,
+  });
+
+  const payload = ticket.getPayload();
+
+  if (!payload) {
+    throw new Error("Google ID token carried no payload");
+  }
+
+  if (!payload.iss || !GOOGLE_ISSUERS.includes(payload.iss)) {
+    throw new Error(`Google ID token has an unexpected issuer: ${payload.iss}`);
+  }
+
+  if (!payload.sub) {
+    throw new Error("Google ID token carried no subject");
+  }
+
+  if (!payload.email) {
+    throw new Error("Google ID token carried no email claim");
+  }
+
+  return {
+    googleSub: payload.sub,
+    email: payload.email,
+    // Absent is treated as unverified. The claim is optional, and reading a
+    // missing value as "verified" would invert the guard it exists to support.
+    emailVerified: payload.email_verified === true,
+    name: payload.name ?? null,
+    imageUrl: payload.picture ?? null,
+  };
 };
 
 export const getGmailAddress = async (tokens: Credentials) => {
