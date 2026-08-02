@@ -24,9 +24,10 @@ export const createEventController = async (req: Request, res: Response) => {
 // GET /event?status=review
 export const getEventsController = async (req: Request, res: Response) => {
   try {
+    const context = requireTenantContext(req);
     const { status } = req.query;
 
-    const events = await getEventsService({
+    const events = await getEventsService(context, {
       status: status as string,
     });
 
@@ -38,11 +39,21 @@ export const getEventsController = async (req: Request, res: Response) => {
 };
 
 // GET /event/:id
+//
+// 404 covers both "no such Event" and "not yours" (RFC-001 §9.4). They are
+// answered identically on purpose: a distinct 403 would confirm the existence of
+// a record the caller may not see, and Event ids are sequential and therefore
+// trivially enumerable.
 export const getEventByIdController = async (req: Request, res: Response) => {
   try {
+    const context = requireTenantContext(req);
     const { id } = req.params;
 
-    const event = await getEventByIdService(Number(id));
+    const event = await getEventByIdService(context, Number(id));
+
+    if (!event) {
+      return res.status(404).json({ message: "Event not found" });
+    }
 
     res.json(event);
   } catch (error) {
@@ -53,9 +64,18 @@ export const getEventByIdController = async (req: Request, res: Response) => {
 // PATCH /event/:id
 export const updateEventController = async (req: Request, res: Response) => {
   try {
+    const context = requireTenantContext(req);
     const { id } = req.params;
 
-    const updated = await updateEventManuallyService(Number(id), req.body);
+    const updated = await updateEventManuallyService(
+      context,
+      Number(id),
+      req.body,
+    );
+
+    if (!updated) {
+      return res.status(404).json({ message: "Event not found" });
+    }
 
     res.json(updated);
   } catch (error) {

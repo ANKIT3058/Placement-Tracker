@@ -2,8 +2,14 @@ const prismaMock: any = {
   event: {
     findMany: jest.fn().mockResolvedValue([]),
     findUnique: jest.fn().mockResolvedValue(null),
+    // AC-5.8. Tenant-scoped reads use `findFirst` rather than `findUnique`,
+    // because the predicate is (id, userId) and only `id` is unique until
+    // AC-5.11. Defaults to a bare owned row so ownership checks pass; a test
+    // that cares about the refusal path overrides it with null.
+    findFirst: jest.fn().mockResolvedValue({ id: 1 }),
     create: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn().mockResolvedValue({ count: 1 }),
   },
   eventUpdate: {
     create: jest.fn(),

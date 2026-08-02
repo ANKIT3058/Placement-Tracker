@@ -17,16 +17,16 @@ export const processEmailJob = async (
     throw new Error("Email not found");
   }
 
-  await updateEmailStatus(emailId, EMAIL_STATUS.PROCESSING);
+  await updateEmailStatus(owner, emailId, EMAIL_STATUS.PROCESSING);
 
   try {
     await processEmail(owner, email, emailId);
 
-    await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+    await updateEmailStatus(owner, emailId, EMAIL_STATUS.COMPLETED);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
 
-    await markEmailFailed(emailId, message);
+    await markEmailFailed(owner, emailId, message);
 
     throw error;
   }

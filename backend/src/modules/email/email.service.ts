@@ -72,7 +72,7 @@ export const processEmail = async (
     !data.date ||
     !/^\d{4}-\d{2}-\d{2}$/.test(data.date)
   ) {
-    await updateEmailStatus(emailId, EMAIL_STATUS.IGNORED);
+    await updateEmailStatus(owner, emailId, EMAIL_STATUS.IGNORED);
     return;
   }
 
@@ -105,12 +105,12 @@ export const processEmail = async (
       enrichedData,
     );
 
-    await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+    await updateEmailStatus(owner, emailId, EMAIL_STATUS.COMPLETED);
 
     return result;
   }
 
   const result = await createEventService(owner, enrichedData);
-  await updateEmailStatus(emailId, EMAIL_STATUS.COMPLETED);
+  await updateEmailStatus(owner, emailId, EMAIL_STATUS.COMPLETED);
   return result;
 };

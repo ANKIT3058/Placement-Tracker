@@ -1,5 +1,6 @@
 import { prisma } from "../../lib/prisma.js";
 import type { EmailInput } from "./email.types.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
 export const createEmail = async (email: EmailInput) => {
   const attachments = email.attachments ?? [];
@@ -46,6 +47,17 @@ export const getEmailByGmailMessageId = async (gmailMessageId: string) => {
   });
 };
 
+// THE OWNERSHIP DERIVATION ROOT — deliberately unscoped.
+//
+// This is where the pipeline learns who owns a unit of work (RFC-001 §9.5): the
+// worker reads the Email and takes `userId` off it. Requiring an owner here
+// would be circular — the caller would have to already know the answer this
+// call exists to provide, and the only place it could come from is the queue
+// payload, which is exactly the untrusted input the derivation replaces.
+//
+// It is safe because it is not reachable from a request. Its two callers are
+// the email worker and the processor beneath it, both keyed by an id that came
+// from a job the system enqueued itself.
 export const getEmailById = async (id: number) => {
   return prisma.email.findUnique({
     where: {
@@ -54,22 +66,47 @@ export const getEmailById = async (id: number) => {
   });
 };
 
-export const updateEmailStatus = async (id: number, status: string) => {
-  return prisma.email.update({
+// Status writes are scoped even though their callers derived the owner from the
+// same row moments earlier. The predicate is not there to catch today's callers;
+// it is there so that a future caller that has *not* derived the owner cannot
+// write across tenants. A refused write returns `count: 0` rather than throwing,
+// so it is observable.
+export const updateEmailStatus = async (
+  owner: OwnershipContext,
+  id: number,
+  status: string,
+) => {
+  const result = await prisma.email.updateMany({
     where: {
       id,
+      userId: owner.userId,
     },
 
     data: {
       processingStatus: status,
     },
   });
+
+  if (result.count === 0) {
+    // Unreachable while the owner is derived from this same row. If it fires,
+    // an ownership invariant has broken rather than a status update failing.
+    console.warn(
+      `[email] Status update on email ${id} matched no row for owner ${owner.userId}`,
+    );
+  }
+
+  return result;
 };
 
-export const markEmailFailed = async (id: number, reason: string) => {
-  return prisma.email.update({
+export const markEmailFailed = async (
+  owner: OwnershipContext,
+  id: number,
+  reason: string,
+) => {
+  return prisma.email.updateMany({
     where: {
       id,
+      userId: owner.userId,
     },
 
     data: {
@@ -79,17 +116,22 @@ export const markEmailFailed = async (id: number, reason: string) => {
   });
 };
 
-export const getFailedEmails = async () => {
+// Both currently uncalled. Kept ownership-aware rather than global so that
+// whoever builds the retry or backlog view on top of them inherits the tenant
+// predicate instead of having to remember it.
+export const getFailedEmails = async (owner: OwnershipContext) => {
   return prisma.email.findMany({
     where: {
+      userId: owner.userId,
       processingStatus: "failed",
     },
   });
 };
 
-export const getPendingEmails = async () => {
+export const getPendingEmails = async (owner: OwnershipContext) => {
   return prisma.email.findMany({
     where: {
+      userId: owner.userId,
       processingStatus: "pending",
     },
   });

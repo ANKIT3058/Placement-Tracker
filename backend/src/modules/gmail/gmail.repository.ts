@@ -1,5 +1,8 @@
 import { prisma } from "../../lib/prisma.js";
-import type { TenantContext } from "../auth/tenant-context.js";
+import type {
+  TenantContext,
+  OwnershipContext,
+} from "../auth/tenant-context.js";
 
 // Connect a mailbox and attach it to the User who authorized it.
 //
@@ -55,10 +58,18 @@ export const connectGmailAccount = async (
   });
 };
 
-export const getGmailAccount = async (email: string) => {
-  return prisma.gmailAccount.findUnique({
+// Currently uncalled. Resolving a mailbox by address is a legitimate operation,
+// but only within an owner: the address is caller-supplied, and an unscoped
+// lookup answers "does this person use this system, and with which mailbox" to
+// anyone who can name an address.
+export const getGmailAccount = async (
+  owner: OwnershipContext,
+  email: string,
+) => {
+  return prisma.gmailAccount.findFirst({
     where: {
       email,
+      userId: owner.userId,
     },
   });
 };

@@ -6,7 +6,7 @@ jest.mock("../event.repository", () => ({
 import { detectChanges } from "../event.service";
 import {
   updateEventService as updateEventServiceScoped,
-  updateEventManuallyService,
+  updateEventManuallyService as updateEventManuallyServiceScoped,
 } from "../event.service";
 import * as repo from "../event.repository";
 import { prisma } from "../../../lib/prisma";
@@ -21,6 +21,9 @@ const updateEventService = (
   existing: any,
   incoming: any,
 ) => updateEventServiceScoped(UNOWNED, eventId, existing, incoming);
+
+const updateEventManuallyService = (id: number, data: any) =>
+  updateEventManuallyServiceScoped(UNOWNED, id, data);
 
 describe("Event Service - Venue Logic", () => {
   test("explicit null should clear venue", () => {
@@ -438,6 +441,21 @@ describe("Manual Authority (AC-3 / D-9)", () => {
         reviewReason: null,
       }),
     });
-    expect(result.company).toBe("Amazon India");
+    expect(result?.company).toBe("Amazon India");
+  });
+
+  // AC-5.8. The manual-edit path is an authenticated write, so it must refuse
+  // an Event the caller does not own — and refuse it indistinguishably from one
+  // that does not exist (RFC-001 §9.4).
+  it("refuses to edit an Event the caller does not own", async () => {
+    (prisma.event.findFirst as jest.Mock).mockResolvedValue(null);
+
+    const result = await updateEventManuallyService(1, {
+      company: "Amazon India",
+    });
+
+    expect(result).toBeNull();
+    // The refusal happens before any write, so nothing is mutated.
+    expect(prisma.event.update).not.toHaveBeenCalled();
   });
 });

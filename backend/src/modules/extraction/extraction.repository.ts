@@ -1,4 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
 interface CreateExtractionInput {
   emailId: number;
@@ -28,10 +29,17 @@ export const createExtraction = async (data: CreateExtractionInput) => {
   });
 };
 
-export const getExtractionsForEmail = async (emailId: number) => {
+// Currently uncalled. Scoped on both `emailId` and owner rather than `emailId`
+// alone: an id from a request is caller-supplied, and a lookup keyed only on it
+// reads another tenant's extractions for anyone who guesses a number.
+export const getExtractionsForEmail = async (
+  owner: OwnershipContext,
+  emailId: number,
+) => {
   return prisma.emailExtraction.findMany({
     where: {
       emailId,
+      userId: owner.userId,
     },
   });
 };

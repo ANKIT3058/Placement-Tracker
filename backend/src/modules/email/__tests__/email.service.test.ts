@@ -127,6 +127,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     expect(matching.matchEventV2).not.toHaveBeenCalled();
     // Recorded as the ABANDON outcome the handbook specifies.
     expect(emailRepo.updateEmailStatus).toHaveBeenCalledWith(
+      UNOWNED,
       1,
       EMAIL_STATUS.IGNORED,
     );
@@ -149,6 +150,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
     expect(eventService.createEventService).not.toHaveBeenCalled();
     expect(matching.matchEventV2).not.toHaveBeenCalled();
     expect(emailRepo.updateEmailStatus).toHaveBeenCalledWith(
+      UNOWNED,
       1,
       EMAIL_STATUS.IGNORED,
     );
@@ -236,6 +238,7 @@ describe("Viability Gate - unresolved company (AC-4 / D-10)", () => {
 
     expect(eventService.createEventService).not.toHaveBeenCalled();
     expect(emailRepo.updateEmailStatus).toHaveBeenCalledWith(
+      UNOWNED,
       1,
       EMAIL_STATUS.IGNORED,
     );

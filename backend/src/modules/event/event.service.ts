@@ -189,8 +189,11 @@ export const detectChanges = (existing: any, incoming: any) => {
 };
 
 // GET EVENTS
-export const getEventsService = async ({ status }: { status?: string }) => {
-  const where: any = {};
+export const getEventsService = async (
+  owner: OwnershipContext,
+  { status }: { status?: string },
+) => {
+  const where: any = { userId: owner.userId };
 
   if (status) where.status = status;
 
@@ -201,14 +204,46 @@ export const getEventsService = async ({ status }: { status?: string }) => {
 };
 
 // GET SINGLE EVENT
-export const getEventByIdService = async (id: number) => {
-  return prisma.event.findUnique({
-    where: { id },
+//
+// `findFirst` with a tenant predicate rather than `findUnique` by id. The
+// difference is the point: a `findUnique` returns another User's Event and
+// leaves the caller to remember to check, which is the kind of check that is
+// eventually forgotten. Here an Event owned by someone else is simply not found,
+// and the caller cannot distinguish that from a non-existent id — which is what
+// RFC-001 §9.4 requires of the response.
+export const getEventByIdService = async (
+  owner: OwnershipContext,
+  id: number,
+) => {
+  return prisma.event.findFirst({
+    where: { id, userId: owner.userId },
   });
 };
 
 // MANUAL UPDATE (REVIEW FIX)
-export const updateEventManuallyService = async (id: number, data: any) => {
+//
+// Returns null when the Event does not exist or belongs to another User, so the
+// controller answers 404 in both cases.
+//
+// Ownership is verified in a separate read rather than folded into the update,
+// because `update` requires a unique predicate and `id` alone is the only unique
+// key available until AC-5.11 adds `@@unique([userId, eventKey])`. The window
+// between the two statements is not exploitable: ownership is immutable once
+// written, so it cannot change between the check and the write.
+export const updateEventManuallyService = async (
+  owner: OwnershipContext,
+  id: number,
+  data: any,
+) => {
+  const existing = await prisma.event.findFirst({
+    where: { id, userId: owner.userId },
+    select: { id: true },
+  });
+
+  if (!existing) {
+    return null;
+  }
+
   return prisma.event.update({
     where: { id },
     data: {

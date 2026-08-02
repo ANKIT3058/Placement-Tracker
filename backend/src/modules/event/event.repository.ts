@@ -75,9 +75,20 @@ export const findByEventKey = async (
   });
 };
 
-export const updateEvent = async (id: number, data: any) => {
-  return prisma.event.update({
-    where: { id },
+// Currently uncalled, kept ownership-aware rather than left global. An unscoped
+// mutator sitting in a repository is a footgun aimed at whoever revives it: the
+// tenant predicate has to be there before the first caller, not after.
+//
+// `updateMany` because `update` demands a unique predicate and `id` is the only
+// unique key until AC-5.11. It returns a count, so a caller can tell a refused
+// cross-tenant write from an applied one.
+export const updateEvent = async (
+  owner: OwnershipContext,
+  id: number,
+  data: any,
+) => {
+  return prisma.event.updateMany({
+    where: { id, userId: owner.userId },
     data,
   });
 };
