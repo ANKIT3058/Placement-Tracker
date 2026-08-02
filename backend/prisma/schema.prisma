@@ -12,8 +12,7 @@ datasource db {
   provider = "postgresql"
 }
 
-// The root aggregate of the domain (RFC-001 §6.2 P1). Introduced by AC-5.1 as a
-// standalone table: nothing references it yet, and it references nothing.
+// The root aggregate of the domain (RFC-001 §6.2 P1).
 //
 // Identity is keyed on `googleSub` — the opaque, immutable Google subject — and
 // never on `email`, which is mutable, reassignable by a Workspace administrator,
@@ -21,12 +20,10 @@ datasource db {
 // no unique constraint for the same reason; it is a display and contact
 // attribute, indexed only for lookup.
 //
-// The back-relations to GmailAccount, Email, Event and EventUpdate specified in
-// RFC-001 §12.1 are deliberately absent here. Prisma requires the opposite side
-// of a relation to exist, and that side is the nullable `userId` column on each
-// child — which belongs to AC-5.2. Declaring them now would force those columns
-// into this migration. They are added in AC-5.2 alongside the columns that make
-// them representable.
+// AC-5.2 adds the back-relations below. They are the opposite side of the
+// nullable `userId` columns on each child. Ownership is not yet enforced: every
+// `userId` is optional and every existing row has NULL. AC-5.10 backfills them
+// and makes them required.
 model User {
   id       Int    @id @default(autoincrement())
   publicId String @unique @default(uuid())
@@ -43,11 +40,20 @@ model User {
   lastLoginAt DateTime?
   deletedAt   DateTime?
 
+  gmailAccounts GmailAccount[]
+  emails        Email[]
+  events        Event[]
+  eventUpdates  EventUpdate[]
+
   @@index([email])
 }
 
 model Event {
   id Int @id @default(autoincrement())
+
+  // Nullable during the expand phase (RFC-001 §19 Phase 1). Nothing reads it
+  // yet; recognition queries remain unscoped until AC-5.8.
+  userId Int?
 
   company String
   stage   String
@@ -66,11 +72,17 @@ model Event {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  user    User?         @relation(fields: [userId], references: [id])
   updates EventUpdate[]
+
+  @@index([userId, date])
+  @@index([userId, status])
 }
 
 model EventUpdate {
   id Int @id @default(autoincrement())
+
+  userId Int?
 
   eventId  Int
   field    String
@@ -79,12 +91,17 @@ model EventUpdate {
 
   updatedAt DateTime @default(now())
 
-  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user  User?  @relation(fields: [userId], references: [id])
+  event Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([userId, eventId])
 }
 
 model Email {
   id             Int     @id @default(autoincrement())
   gmailMessageId String? @unique
+
+  userId Int?
 
   // The Gmail account that synced this email. Optional so pre-existing rows
   // (synced before accounts were tracked) remain valid; every newly synced
@@ -102,16 +119,28 @@ model Email {
 
   createdAt DateTime @default(now())
 
+  user         User?             @relation(fields: [userId], references: [id])
   gmailAccount GmailAccount?     @relation(fields: [gmailAccountId], references: [id])
   extractions  EmailExtraction[]
   attachments  Attachment[]
 
   @@index([gmailAccountId])
+  @@index([userId, receivedAt])
+  @@index([userId, processingStatus])
 }
 
 model Attachment {
-  id                Int     @id @default(autoincrement())
-  emailId           Int
+  id      Int @id @default(autoincrement())
+  emailId Int
+
+  // Tenant key, carried as a plain column with no relation to User. Enforcement
+  // for derivative records runs through the parent: AC-5.10 attaches the
+  // composite foreign key to Email(id, userId) (RFC-001 §7.2, §12.3), which is
+  // what makes tenant divergence from the owning Email unrepresentable. A direct
+  // User relation would add a second, weaker path to the same fact — which is
+  // why RFC-001 §12.1 lists no back-relation for this model.
+  userId Int?
+
   gmailAttachmentId String
   filename          String
   mimeType          String
@@ -147,6 +176,9 @@ model EmailExtraction {
 
   emailId Int
 
+  // See Attachment.userId — same pattern, same reason.
+  userId Int?
+
   company String?
   stage   String?
   date    DateTime?
@@ -165,13 +197,34 @@ model EmailExtraction {
   email Email @relation(fields: [emailId], references: [id], onDelete: Cascade)
 }
 
+// The mailbox provider this connection represents (RFC-001 §12.2). A
+// discriminator, not an abstraction: there is no strategy interface and no
+// dispatch keyed on it. It exists so the provider is data rather than only the
+// table's name — integration code can assert `provider == GOOGLE` instead of
+// assuming it, and a second provider would not require renaming a table that
+// carries foreign keys from Email, EmailExtraction and Attachment.
+//
+// `@default(GOOGLE)` exists so this expand migration needs no backfill; it
+// should be dropped if a second variant is ever added, so new rows must state
+// their provider explicitly.
+enum MailProvider {
+  GOOGLE
+}
+
 model GmailAccount {
-  id           Int      @id @default(autoincrement())
+  id     Int @id @default(autoincrement())
+  userId Int?
+
+  provider MailProvider @default(GOOGLE)
+
   email        String   @unique
   refreshToken String
   historyId    String?
   connectedAt  DateTime @default(now())
   createdAt    DateTime @default(now())
 
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
   emails Email[]
+
+  @@index([userId])
 }
