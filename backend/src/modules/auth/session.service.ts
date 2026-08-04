@@ -18,18 +18,21 @@ import "./session.types.js";
 // outlive the longest session it could contain.
 const sessionIndexKey = (userId: number) => `user_sessions:${userId}`;
 
+// node-redis command names are camelCase (`sAdd`, `pExpire`, `sRem`) where
+// ioredis used lower case. Same commands, same arguments, same semantics — only
+// the client's method names differ.
 const indexSession = async (userId: number, sessionId: string) => {
   const key = sessionIndexKey(userId);
 
   await sessionRedis
     .multi()
-    .sadd(key, sessionId)
-    .pexpire(key, SESSION_ABSOLUTE_LIFETIME_MS)
+    .sAdd(key, sessionId)
+    .pExpire(key, SESSION_ABSOLUTE_LIFETIME_MS)
     .exec();
 };
 
 const unindexSession = async (userId: number, sessionId: string) => {
-  await sessionRedis.srem(sessionIndexKey(userId), sessionId);
+  await sessionRedis.sRem(sessionIndexKey(userId), sessionId);
 };
 
 // Has this session passed its absolute ceiling? True also for a session with no

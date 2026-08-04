@@ -1,4 +1,9 @@
-import { Redis } from "ioredis";
+// Loaded here rather than relied on from elsewhere. This module reads its
+// configuration at import time, so it must not depend on some other module
+// having imported dotenv first — an import-order change would otherwise make it
+// fall back to `redis://localhost:6379` silently and fail only at sign-in.
+import "dotenv/config";
+import { createClient } from "redis";
 
 // Redis connection used by the session store, kept separate from the BullMQ
 // connection in `redis.ts` (RFC-001 §11.5).
@@ -8,6 +13,19 @@ import { Redis } from "ioredis";
 // while a session store is commonly deployed with an LRU policy. Applied to the
 // queue instance, LRU destroys jobs under memory pressure. Sessions here expire
 // by TTL only; nothing relies on eviction.
+//
+// WHY node-redis AND NOT ioredis
+//
+// `connect-redis` v10 declares `peerDependencies: { redis: ">=5" }` and issues
+// its writes as `client.set(key, value, { expiration: { type: "EX", value } })`
+// — the node-redis command signature, which takes an options object. ioredis
+// takes variadic arguments (`'EX', ttl`) and stringifies anything else, so the
+// same call reached Redis as `SET <key> <value> [object Object]` and was
+// rejected with `ERR syntax error`. The store never wrote a session.
+//
+// The queue connection stays on ioredis: BullMQ requires it. Two clients from
+// two libraries is the correct outcome here, not an inconsistency — each
+// library is paired with the client it is built for.
 //
 // RFC-001 §11.5 asks for a separate logical database at minimum and a separate
 // instance in production. This is expressed as a separate URL rather than a
@@ -34,28 +52,49 @@ if (!configuredUrl && process.env.NODE_ENV === "production") {
 
 const sessionRedisUrl = configuredUrl || "redis://localhost:6379";
 
-export const sessionRedis = new Redis(sessionRedisUrl, {
-  // Deliberately NOT `maxRetriesPerRequest: null`, which `redis.ts` sets because
-  // BullMQ requires it. That setting makes a command retry forever; on the
-  // request path it turns a Redis outage into hung requests instead of fast
-  // failures. Three attempts, then the request errors and the client can react.
-  maxRetriesPerRequest: 3,
+export const sessionRedis = createClient({
+  url: sessionRedisUrl,
 
-  // Connect on first command rather than on construction. Importing this module
-  // must not open a socket: the test suite imports `app` (and therefore this
-  // file) without ever touching a session, and an eager connection leaks a
-  // handle that keeps Jest alive — the same reason `queues.ts` is mocked there.
-  //
-  // The cost is that an unreachable Redis surfaces on the first session
-  // operation instead of at boot. For a request-path dependency that is the
-  // right place for it to surface anyway.
-  lazyConnect: true,
+  // Fail commands immediately while the connection is down instead of queueing
+  // them. This is the node-redis equivalent of the intent behind ioredis's
+  // `maxRetriesPerRequest: 3`: on the request path a Redis outage should produce
+  // a fast failure the caller can react to, never a hung request.
+  disableOfflineQueue: true,
+
+  socket: {
+    // Reconnect indefinitely with bounded backoff. Returning an Error here
+    // would close the client permanently and require a process restart to
+    // recover from a transient outage; the offline queue being disabled is what
+    // keeps individual requests fast meanwhile.
+    reconnectStrategy: (retries: number) => Math.min(retries * 100, 3000),
+  },
 });
 
-sessionRedis.on("connect", () => {
+// node-redis emits `error` on the client. Without a listener, a connection
+// failure raises an unhandled 'error' event and terminates the process.
+sessionRedis.on("error", (err: Error) => {
+  console.error("❌ Redis (session) error:", err.message);
+});
+
+sessionRedis.on("ready", () => {
   console.log("✅ Redis (session) connected");
 });
 
-sessionRedis.on("error", (err: Error) => {
-  console.error("❌ Redis (session) error:", err);
-});
+// Connection is explicit and deliberately NOT performed at import time.
+//
+// node-redis does not connect implicitly — a command issued before `connect()`
+// throws `ClientClosedError` rather than being queued — so something must call
+// this. Doing it here at module scope would open a socket merely by importing
+// the module, and the test suite imports `app` (and therefore this file)
+// without ever touching a session; an eager connection leaks a handle that
+// keeps Jest alive. That is the same reason `queues.ts` is mocked there.
+//
+// `server.ts` calls this during startup. Idempotent: node-redis resolves
+// immediately when the client is already open.
+export const connectSessionRedis = async (): Promise<void> => {
+  if (sessionRedis.isOpen) {
+    return;
+  }
+
+  await sessionRedis.connect();
+};
