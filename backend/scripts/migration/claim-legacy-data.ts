@@ -76,11 +76,14 @@ Reports what the legacy migration owner still holds, resolves which authenticate
 User each parked mailbox belongs to, and transfers each mailbox's records to its
 own owner. Nothing is written without --apply.
 
+Mailbox-linked records are resolved automatically and never need --to.
+
 Options:
-  --to <userId>   Owner for records that belong to no mailbox: Events,
-                  EventUpdates, and Emails ingested before mailboxes were
-                  tracked. Only required when it cannot be derived — with a
-                  single mailbox owner it is inferred.
+  --to <userId>   Operator destination for records whose mailbox ownership no
+                  longer exists: Events, EventUpdates, and Emails ingested
+                  before mailboxes were tracked. Nothing infers this — the
+                  provenance was never recorded — so it is REQUIRED whenever
+                  such records are parked, and ignored when none are.
   --apply         Perform the transfer (default is a dry run)
   --help          Show this message
 `;
@@ -396,29 +399,27 @@ const assertMappingsResolvable = (mappings: MailboxMapping[]): void => {
 // to one `--to`. Transfer is now mailbox-scoped, so division is an ordinary
 // outcome: each mailbox goes to its own owner. Consensus still matters for the
 // records no mailbox can account for — see `resolveRemainderOwner`.
-type OwnerConsensus =
-  | { type: "none" }
-  | { type: "unanimous"; user: CandidateUser }
-  | { type: "divided"; users: CandidateUser[] };
-
-const resolveOwnerConsensus = (mappings: MailboxMapping[]): OwnerConsensus => {
+// Distinct Users the parked mailboxes resolve to. Reporting only — it is never
+// an input to any ownership decision.
+//
+// An earlier revision used a unanimous answer here to infer an owner for the
+// records no mailbox accounts for. That inference is now removed: those records
+// are Class C, their mailbox provenance was never recorded (Event has never
+// carried a link to Email in any migration, and `Email.gmailAccountId` arrived
+// only in 20260707111227, unbackfillable), and "the mailbox owner is probably
+// also the owner of the orphans" is a guess. A guess that assigns one person's
+// records to another is exactly what this command must not make, so the owner
+// is now required explicitly via --to.
+const distinctMailboxOwners = (
+  assignments: MailboxAssignment[],
+): CandidateUser[] => {
   const owners = new Map<number, CandidateUser>();
 
-  for (const mapping of mappings) {
-    if (mapping.resolution.type === "mapped") {
-      owners.set(mapping.resolution.user.id, mapping.resolution.user);
-    }
+  for (const assignment of assignments) {
+    owners.set(assignment.owner.id, assignment.owner);
   }
 
-  if (owners.size === 0) {
-    return { type: "none" };
-  }
-
-  if (owners.size === 1) {
-    return { type: "unanimous", user: [...owners.values()][0]! };
-  }
-
-  return { type: "divided", users: [...owners.values()] };
+  return [...owners.values()];
 };
 
 // --- transfer --------------------------------------------------------------
@@ -511,20 +512,62 @@ const mailboxStatements = (
   ];
 };
 
-// Whatever the mailbox passes could not reach: Events, EventUpdates, and Emails
-// ingested before mailboxes were tracked (`gmailAccountId IS NULL`) together
-// with their extractions and attachments. Unscoped by design — by this point
-// the mailbox-reachable rows have already moved, so "still owned by the
-// placeholder" is exactly the remainder.
+// The operator pass: records whose mailbox provenance does not exist.
+//
+// Every statement is scoped to rows that are structurally mailbox-less, not
+// merely to "whatever is left". Relying on execution order would make the
+// operator's destination a catch-all — a mailbox row the earlier pass somehow
+// missed would be swept up and silently reassigned. Scoped this way it cannot
+// be: a missed mailbox row matches nothing here, stays with the placeholder,
+// and `verifyPlaceholderReleased` fails the transaction.
+//
+//   Event, EventUpdate  — no link to a mailbox has ever existed in any migration
+//   Email               — gmailAccountId IS NULL (pre-07-07 sync, or manual route)
+//   EmailExtraction,
+//   Attachment          — children of those mailbox-less Emails
 const remainderStatements = (
   legacyId: number,
   ownerId: number,
-): TransferStatement[] =>
-  TABLES.map((table) => ({
-    table,
-    sql: `UPDATE "${table}" SET "userId" = $1 WHERE "userId" = $2`,
-    params: [ownerId, legacyId],
-  }));
+): TransferStatement[] => {
+  const params = [ownerId, legacyId];
+
+  // Deliberately not filtered on the Email's owner: the Email UPDATE below runs
+  // first and cascades onto its children, so by the time the child statements
+  // run their parent has already moved. Selecting on `gmailAccountId IS NULL`
+  // alone keeps them a meaningful safety net rather than guaranteed no-ops.
+  const mailboxlessEmails = `SELECT id FROM "Email" WHERE "gmailAccountId" IS NULL`;
+
+  return [
+    {
+      table: "Email",
+      sql: `UPDATE "Email" SET "userId" = $1
+             WHERE "userId" = $2 AND "gmailAccountId" IS NULL`,
+      params,
+    },
+    {
+      table: "EmailExtraction",
+      sql: `UPDATE "EmailExtraction" SET "userId" = $1
+             WHERE "userId" = $2 AND "emailId" IN (${mailboxlessEmails})`,
+      params,
+    },
+    {
+      table: "Attachment",
+      sql: `UPDATE "Attachment" SET "userId" = $1
+             WHERE "userId" = $2 AND "emailId" IN (${mailboxlessEmails})`,
+      params,
+    },
+    {
+      table: "Event",
+      sql: `UPDATE "Event" SET "userId" = $1 WHERE "userId" = $2`,
+      params,
+    },
+    {
+      table: "EventUpdate",
+      sql: `UPDATE "EventUpdate" SET "userId" = $1 WHERE "userId" = $2`,
+      params,
+    },
+  ];
+};
 
 const runStatements = async (
   client: Client,
@@ -734,17 +777,37 @@ const executeTransfer = async (
       perMailbox.push({ assignment, moved });
     }
 
-    // Everything the mailbox passes could not reach.
-    const remainder =
-      plan.remainderOwnerId === null
-        ? []
-        : await runStatements(
-            client,
-            remainderStatements(plan.legacyId, plan.remainderOwnerId),
-          );
+    // The operator pass. Snapshot first: the ids are what the post-transfer
+    // check verifies against, and they must be read while the rows still belong
+    // to the placeholder.
+    let remainder: TableHolding[] = [];
+    let snapshot: RemainderSnapshot | null = null;
+
+    if (plan.remainderOwnerId !== null) {
+      snapshot = await snapshotRemainder(client, plan.legacyId);
+
+      remainder = await runStatements(
+        client,
+        remainderStatements(plan.legacyId, plan.remainderOwnerId),
+      );
+    }
 
     await verifyPlaceholderReleased(client, plan.legacyId);
+
+    // Mailbox-linked ownership is unchanged by the operator pass. Re-running
+    // the same per-mailbox check afterwards is what proves it: if the operator
+    // statements had reached a mailbox row, its owner would no longer match the
+    // resolver's attribution.
+    for (const assignment of plan.assignments) {
+      await verifyMailboxTransferred(client, assignment);
+    }
+
     await verifyMailboxOwnershipMatchesResolver(client, plan.assignments);
+
+    if (snapshot && plan.remainderOwnerId !== null) {
+      await verifyRemainderTransferred(client, snapshot, plan.remainderOwnerId);
+    }
+
     await verifyOwnershipConsistent(client);
 
     await client.query("COMMIT");
@@ -762,27 +825,56 @@ const summariseMoved = (moved: TableHolding[]): string =>
     .map((entry) => `${entry.table} ${entry.count}`)
     .join(", ") || "nothing moved directly (cascade)";
 
-const reportTransfer = (outcome: TransferOutcome): void => {
-  console.log("Ownership transferred");
+const reportTransfer = (
+  outcome: TransferOutcome,
+  remainder: RemainderPlan,
+): void => {
+  console.log("Automatic transfer (mailbox-resolved) — applied");
+  console.log("");
+
+  if (outcome.perMailbox.length === 0) {
+    console.log("  (no mailbox was parked)");
+  }
 
   for (const result of outcome.perMailbox) {
-    console.log(
-      `  ${result.assignment.mailbox.email.padEnd(32)} -> user ${result.assignment.owner.id}`,
-    );
+    console.log(`  ${result.assignment.mailbox.email}`);
+    console.log(`      -> user ${result.assignment.owner.id}`);
     console.log(`      ${summariseMoved(result.moved)}`);
     console.log(`      verified OK`);
   }
 
-  if (outcome.remainder.length > 0) {
-    console.log(`  ${"(records with no mailbox)".padEnd(32)}`);
+  console.log("");
+  console.log(RULE);
+  console.log("");
+  console.log("Operator transfer — applied");
+  console.log("");
+
+  if (remainder.type === "operator") {
+    console.log(`  ${remainder.count} legacy record(s)`);
+    console.log(`      -> user ${remainder.userId}`);
     console.log(`      ${summariseMoved(outcome.remainder)}`);
+    console.log(`      verified OK`);
+    console.log("");
+    console.log("  Reason:");
+    console.log("      Mailbox ownership unavailable in historical schema.");
+    console.log("      Operator explicitly selected destination.");
+  } else {
+    console.log("  (nothing — every parked record had a mailbox)");
   }
 
   console.log("");
+  console.log(RULE);
+  console.log("");
   console.log("Final verification (inside the transaction)");
-  console.log("  placeholder owns nothing                OK");
-  console.log("  mailbox owners match resolver output    OK");
-  console.log("  children agree with their parents       OK");
+  console.log("  placeholder owns nothing                    OK");
+  console.log("  mailbox-linked ownership unchanged          OK");
+  console.log("  mailbox owners match resolver output        OK");
+
+  if (remainder.type === "operator") {
+    console.log("  operator records owned by selected user     OK");
+  }
+
+  console.log("  children agree with their parents           OK");
   console.log("");
 };
 
@@ -805,23 +897,29 @@ const loadUnreachableCount = async (
   return Number(rows[0]?.count ?? 0);
 };
 
-// Who receives the records no mailbox accounts for.
+// Who receives the records whose mailbox provenance does not exist.
 //
-// `--to` wins when supplied — with several mailbox owners it is the only way to
-// name one. Otherwise a unanimous mailbox owner is used. A divided mapping with
-// no `--to` is refused rather than guessed: an Event cannot be attributed to a
-// mailbox, so nothing in the data says which of the owners should hold it.
-// Returned rather than thrown, so a dry run can report an undecidable
-// remainder as information instead of failing on a read-only query. Only
-// `--apply` turns it into an error.
+// There is exactly one source: `--to`. Nothing is inferred, because there is
+// nothing to infer from — the investigation established these records as
+// Class C. `Event` has never carried a link to `Email` in any of the fourteen
+// migrations, `Email.gmailAccountId` arrived only in 20260707111227 and could
+// not be backfilled, and the recipient headers that would have identified the
+// mailbox were never persisted (`parseMessage` keeps Subject, From and Date
+// only). No column, index, or child row anywhere in the schema distinguishes
+// which mailbox produced them.
+//
+// So this is not a resolution step. It records an operator decision, and
+// refuses to proceed without one.
+//
+// Returned rather than thrown so a dry run can report the situation instead of
+// failing on a read-only query. Only `--apply` turns it into an error.
 type RemainderPlan =
   | { type: "none" }
-  | { type: "owner"; userId: number }
+  | { type: "operator"; userId: number; count: number }
   | { type: "undecidable"; reason: string };
 
 const resolveRemainderOwner = (
   explicit: number | undefined,
-  consensus: OwnerConsensus,
   unreachable: number,
 ): RemainderPlan => {
   if (unreachable === 0) {
@@ -829,57 +927,158 @@ const resolveRemainderOwner = (
   }
 
   if (explicit) {
-    return { type: "owner", userId: explicit };
-  }
-
-  if (consensus.type === "unanimous") {
-    return { type: "owner", userId: consensus.user.id };
-  }
-
-  if (consensus.type === "divided") {
-    const listed = consensus.users
-      .map((user) => `  ${describeUser(user)}`)
-      .join("\n");
-
-    return {
-      type: "undecidable",
-      reason:
-        `${unreachable} record(s) belong to no mailbox — Events, EventUpdates, and Emails\n` +
-        `ingested before mailboxes were tracked — and the parked mailboxes resolve to\n` +
-        `${consensus.users.length} different users:\n${listed}\n\n` +
-        `An Event carries no link to the mailbox that produced it, so nothing in the data\n` +
-        `says which of them should own these. Name the owner explicitly with --to <userId>.`,
-    };
+    return { type: "operator", userId: explicit, count: unreachable };
   }
 
   return {
     type: "undecidable",
     reason:
-      `${unreachable} record(s) belong to no mailbox, and no mailbox is parked to derive\n` +
-      `an owner from. Name the owner explicitly with --to <userId>.`,
+      `${unreachable} record(s) have no recoverable mailbox ownership.\n\n` +
+      `These are Events, EventUpdates, and Emails whose originating mailbox was never\n` +
+      `recorded: Event has never carried a link to Email, and Email.gmailAccountId was\n` +
+      `introduced only in 20260707111227 without a backfill. Nothing in the schema can\n` +
+      `identify which mailbox produced them, so the migration will not guess.\n\n` +
+      `Name the destination explicitly:  npm run migration:claim -- --to <userId> --apply`,
   };
 };
 
+/**
+ * The exact rows the operator pass will move, captured before it runs.
+ *
+ * Ids rather than counts, so the post-transfer check verifies that *these*
+ * records reached the operator's User — not merely that some equal number of
+ * rows did. Children (EmailExtraction, Attachment) are omitted deliberately:
+ * they cascade from their Email and are covered by `verifyOwnershipConsistent`.
+ */
+type RemainderSnapshot = {
+  eventIds: number[];
+  eventUpdateIds: number[];
+  emailIds: number[];
+};
+
+const snapshotRemainder = async (
+  client: Client,
+  legacyId: number,
+): Promise<RemainderSnapshot> => {
+  const idsOf = async (sql: string): Promise<number[]> => {
+    const { rows } = await client.query<{ id: number }>(sql, [legacyId]);
+    return rows.map((row) => row.id);
+  };
+
+  return {
+    eventIds: await idsOf(
+      `SELECT id FROM "Event" WHERE "userId" = $1 ORDER BY id`,
+    ),
+    eventUpdateIds: await idsOf(
+      `SELECT id FROM "EventUpdate" WHERE "userId" = $1 ORDER BY id`,
+    ),
+    emailIds: await idsOf(
+      `SELECT id FROM "Email" WHERE "userId" = $1 AND "gmailAccountId" IS NULL ORDER BY id`,
+    ),
+  };
+};
+
+// Every record the operator claimed is now owned by the User they named.
+const verifyRemainderTransferred = async (
+  client: Client,
+  snapshot: RemainderSnapshot,
+  ownerId: number,
+): Promise<void> => {
+  const checks: Array<[OwnedTable, number[]]> = [
+    ["Event", snapshot.eventIds],
+    ["EventUpdate", snapshot.eventUpdateIds],
+    ["Email", snapshot.emailIds],
+  ];
+
+  const stray: string[] = [];
+
+  for (const [table, ids] of checks) {
+    if (ids.length === 0) {
+      continue;
+    }
+
+    const { rows } = await client.query<{ count: string }>(
+      `SELECT count(*)::bigint AS count
+         FROM "${table}"
+        WHERE id = ANY($1::int[]) AND "userId" <> $2`,
+      [ids, ownerId],
+    );
+
+    const count = Number(rows[0]?.count ?? 0);
+
+    if (count > 0) {
+      stray.push(`  ${table.padEnd(16)} ${count} of ${ids.length} not owned by user ${ownerId}`);
+    }
+  }
+
+  if (stray.length > 0) {
+    throw new Error(
+      `Operator transfer incomplete:\n${stray.join("\n")}\n\n` +
+        `Rolled back; nothing was changed.`,
+    );
+  }
+};
+
+const RULE = "-".repeat(64);
+
+// The two halves are reported separately and labelled differently on purpose.
+// One is derived from the data and reproducible; the other is a decision a
+// person made and the database cannot justify. Presenting them in one
+// undifferentiated list would hide which is which.
 const reportPlan = (
   assignments: MailboxAssignment[],
   remainder: RemainderPlan,
-  unreachable: number,
 ): void => {
-  console.log("Transfer plan");
+  console.log("Automatic transfer (mailbox-resolved)");
+  console.log("");
 
-  for (const assignment of assignments) {
-    console.log(
-      `  ${assignment.mailbox.email.padEnd(32)} -> ${describeUser(assignment.owner)}`,
-    );
+  if (assignments.length === 0) {
+    console.log("  (no mailbox is parked)");
   }
 
-  if (remainder.type === "owner") {
+  for (const assignment of assignments) {
+    console.log(`  ${assignment.mailbox.email}`);
+    console.log(`      -> ${describeUser(assignment.owner)}`);
+  }
+
+  console.log("");
+  console.log(RULE);
+  console.log("");
+
+  if (remainder.type === "none") {
+    console.log("Operator transfer");
+    console.log("");
+    console.log("  (nothing — every parked record has a mailbox)");
+    console.log("");
+    return;
+  }
+
+  if (remainder.type === "undecidable") {
+    console.log("Operator transfer");
+    console.log("");
+    console.log("  REQUIRED — no destination supplied");
+    console.log("");
+    return;
+  }
+
+  const owners = distinctMailboxOwners(assignments);
+  const divergent = owners.length > 0 && !owners.some((o) => o.id === remainder.userId);
+
+  console.log("Operator transfer");
+  console.log("");
+  console.log(`  ${remainder.count} legacy record(s)`);
+  console.log(`      -> user ${remainder.userId}`);
+  console.log("");
+  console.log("  Reason:");
+  console.log("      Mailbox ownership unavailable in historical schema.");
+  console.log("      Operator explicitly selected destination.");
+
+  if (divergent) {
+    // Legitimate — the operator may deliberately place orphaned records with
+    // someone who owns no parked mailbox — but unusual enough to state.
+    console.log("");
     console.log(
-      `  ${"(records with no mailbox)".padEnd(32)} -> user ${remainder.userId}  [${unreachable} record(s)]`,
-    );
-  } else if (remainder.type === "undecidable") {
-    console.log(
-      `  ${"(records with no mailbox)".padEnd(32)} -> UNDECIDABLE  [${unreachable} record(s)]`,
+      `      NOTE: user ${remainder.userId} owns none of the parked mailboxes.`,
     );
   }
 
@@ -946,11 +1145,10 @@ const main = async (): Promise<void> => {
 
     assertMappingsResolvable(mappings);
 
-    // Each mailbox carries its own destination now, so `--to` no longer names
-    // "the" destination — it names the owner for records no mailbox accounts
-    // for, and is only needed when that cannot be derived.
+    // Mailboxes carry their own destinations, resolved from the data. `--to`
+    // never touches them: it is the operator's destination for the records
+    // whose mailbox provenance no longer exists, and nothing else.
     const assignments = assignmentsOf(mappings);
-    const consensus = resolveOwnerConsensus(mappings);
     const unreachable = await loadUnreachableCount(client, placeholder.id);
 
     if (args.to) {
@@ -973,23 +1171,24 @@ const main = async (): Promise<void> => {
         throw new Error("Destination is the legacy owner itself.");
       }
 
-      // The mailbox evidence outranks the command line, but only where the
-      // evidence is unanimous. With several mailbox owners `--to` is not a
-      // competing claim about a mailbox — it names the owner for the records no
-      // mailbox can account for — so it is not a contradiction.
-      if (consensus.type === "unanimous" && consensus.user.id !== args.to) {
-        throw new Error(
-          `--to ${args.to} contradicts the mailbox evidence.\n\n` +
-            `Every parked mailbox resolves to ${describeUser(consensus.user)}.\n` +
-            `Transferring to User ${args.to} would give them a mailbox history that the\n` +
-            `database attributes to somebody else.`,
+      // No contradiction check against the mailbox owners. `--to` is not a
+      // competing claim about a mailbox — mailbox-linked records never reach
+      // it — so an operator placing orphaned records with someone who owns no
+      // parked mailbox is a legitimate decision, not a mistake. It is reported
+      // rather than refused.
+
+      if (unreachable === 0) {
+        console.log(
+          `NOTE: --to ${args.to} was supplied, but every parked record has a mailbox.\n` +
+            `      It has no effect and no operator transfer will run.`,
         );
+        console.log("");
       }
     }
 
-    const remainder = resolveRemainderOwner(args.to, consensus, unreachable);
+    const remainder = resolveRemainderOwner(args.to, unreachable);
 
-    reportPlan(assignments, remainder, unreachable);
+    reportPlan(assignments, remainder);
 
     if (!args.apply) {
       if (remainder.type === "undecidable") {
@@ -1009,10 +1208,10 @@ const main = async (): Promise<void> => {
     const outcome = await executeTransfer(client, {
       legacyId: placeholder.id,
       assignments,
-      remainderOwnerId: remainder.type === "owner" ? remainder.userId : null,
+      remainderOwnerId: remainder.type === "operator" ? remainder.userId : null,
     });
 
-    reportTransfer(outcome);
+    reportTransfer(outcome, remainder);
 
     console.log(`Transferred ${total} record(s).`);
     console.log(
