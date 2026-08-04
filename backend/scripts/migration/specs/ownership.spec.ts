@@ -35,6 +35,12 @@ export const ownershipSpec: MigrationSpec = {
       name: "legacy-owned data has been claimed",
       description:
         "records parked under the legacy migration owner are unreachable until transferred — run `npm run migration:claim`",
+      // All six ownership-bound tables, not just the three root ones. The
+      // composite foreign keys cascade a parent's owner onto its children, so
+      // a child retaining the placeholder should be impossible — which is
+      // exactly why it would go unnoticed if it happened. Checking only the
+      // parents would report a clean claim while EventUpdate, EmailExtraction
+      // or Attachment rows were still parked.
       sql: `SELECT t.table_name, t.held
               FROM (
                 SELECT 'GmailAccount' AS table_name,
@@ -52,8 +58,55 @@ export const ownershipSpec: MigrationSpec = {
                   FROM "Event" x
                   JOIN "User" u ON u.id = x."userId"
                  WHERE u."googleSub" = 'migration:legacy-owner'
+                 UNION ALL
+                SELECT 'EventUpdate', count(*)
+                  FROM "EventUpdate" x
+                  JOIN "User" u ON u.id = x."userId"
+                 WHERE u."googleSub" = 'migration:legacy-owner'
+                 UNION ALL
+                SELECT 'EmailExtraction', count(*)
+                  FROM "EmailExtraction" x
+                  JOIN "User" u ON u.id = x."userId"
+                 WHERE u."googleSub" = 'migration:legacy-owner'
+                 UNION ALL
+                SELECT 'Attachment', count(*)
+                  FROM "Attachment" x
+                  JOIN "User" u ON u.id = x."userId"
+                 WHERE u."googleSub" = 'migration:legacy-owner'
               ) t
              WHERE t.held > 0`,
+    },
+    {
+      // Post-transfer ownership integrity. The composite foreign keys make
+      // these unrepresentable, so a violation means a constraint was dropped or
+      // the data was moved around them — both worth catching loudly rather than
+      // trusting the schema to have held.
+      name: "child records agree with their parent's owner",
+      description:
+        "RFC-001 §12.3 — (parentId, userId) composite keys exist so a child cannot disagree with its parent's owner",
+      sql: `SELECT relation, violations
+              FROM (
+                SELECT 'Email -> GmailAccount' AS relation, count(*) AS violations
+                  FROM "Email" e
+                  JOIN "GmailAccount" ga ON ga.id = e."gmailAccountId"
+                 WHERE e."userId" IS DISTINCT FROM ga."userId"
+                 UNION ALL
+                SELECT 'EventUpdate -> Event', count(*)
+                  FROM "EventUpdate" eu
+                  JOIN "Event" ev ON ev.id = eu."eventId"
+                 WHERE eu."userId" IS DISTINCT FROM ev."userId"
+                 UNION ALL
+                SELECT 'EmailExtraction -> Email', count(*)
+                  FROM "EmailExtraction" ex
+                  JOIN "Email" em ON em.id = ex."emailId"
+                 WHERE ex."userId" IS DISTINCT FROM em."userId"
+                 UNION ALL
+                SELECT 'Attachment -> Email', count(*)
+                  FROM "Attachment" a
+                  JOIN "Email" em ON em.id = a."emailId"
+                 WHERE a."userId" IS DISTINCT FROM em."userId"
+              ) t
+             WHERE violations > 0`,
     },
     {
       name: "event keys unique per owner",

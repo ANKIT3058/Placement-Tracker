@@ -47,6 +47,17 @@ const LEGACY_SUB = "migration:legacy-owner";
 const LEGACY_PUBLIC_ID = "00000000-0000-4000-8000-000000000001";
 const LEGACY_EMAIL = "legacy-data-owner@migration.invalid";
 
+// Every ownership-bound table, parents before children.
+//
+// This is the complete set carrying a `userId` column in schema.prisma —
+// Event, EventUpdate, Email, Attachment, EmailExtraction, GmailAccount — i.e.
+// the six tables 20260802030000_require_ownership made NOT NULL. `User` is the
+// owner side and is never transferred; nothing else in the schema is
+// user-owned, so nothing else is touched here.
+//
+// Order is load-bearing. The composite foreign keys are ON UPDATE CASCADE, so
+// updating a parent already moves its children; running children first would
+// move rows that the parent's cascade then moves again.
 const TABLES = [
   "GmailAccount",
   "Email",
@@ -424,6 +435,193 @@ const resolveDestination = (
   return [...owners.values()][0]!;
 };
 
+// --- transfer --------------------------------------------------------------
+
+type TransferPlan = {
+  legacyId: number;
+  destinationId: number;
+  /** GmailAccount ids the resolver classified as `mapped`. */
+  mailboxIds: number[];
+};
+
+// Only mailboxes the resolver could attribute. `assertMappingsResolvable` has
+// already refused the run if any mailbox was ambiguous or unmapped, so by the
+// time this is called it is every parked mailbox — but it is derived from the
+// mapping rather than assumed, so the transfer can never widen past what was
+// validated.
+const mappedMailboxIds = (mappings: MailboxMapping[]): number[] =>
+  mappings
+    .filter((mapping) => mapping.resolution.type === "mapped")
+    .map((mapping) => mapping.mailbox.id);
+
+// The post-condition the whole command exists to establish: the placeholder
+// owns nothing.
+//
+// Run inside the transaction, before COMMIT, so a failure rolls the transfer
+// back rather than reporting a problem that is already durable. This is the
+// same shape the backfill migration uses — verify, then let the exception undo
+// the work — and it is what makes "no partial ownership transfer" true rather
+// than merely intended.
+const verifyPlaceholderReleased = async (
+  client: Client,
+  legacyId: number,
+): Promise<void> => {
+  const retained: string[] = [];
+
+  for (const table of TABLES) {
+    const { rows } = await client.query<{ count: string }>(
+      `SELECT count(*)::bigint AS count FROM "${table}" WHERE "userId" = $1`,
+      [legacyId],
+    );
+
+    const count = Number(rows[0]?.count ?? 0);
+
+    if (count > 0) {
+      retained.push(`  ${table.padEnd(16)} ${count}`);
+    }
+  }
+
+  if (retained.length > 0) {
+    throw new Error(
+      `Transfer incomplete — the placeholder still owns records:\n` +
+        `${retained.join("\n")}\n\n` +
+        `Rolled back; nothing was changed.`,
+    );
+  }
+};
+
+// Every mailbox the resolver attributed is now owned by the User it was
+// attributed to. Checks the destination directly rather than inferring it from
+// "the placeholder holds nothing", which would also be satisfied by rows having
+// gone somewhere else entirely.
+const verifyMailboxesTransferred = async (
+  client: Client,
+  mailboxIds: number[],
+  destinationId: number,
+): Promise<void> => {
+  if (mailboxIds.length === 0) {
+    return;
+  }
+
+  const { rows } = await client.query<{ id: number; email: string; userId: number }>(
+    `SELECT id, email, "userId"
+       FROM "GmailAccount"
+      WHERE id = ANY($1::int[]) AND "userId" <> $2`,
+    [mailboxIds, destinationId],
+  );
+
+  if (rows.length > 0) {
+    const listed = rows
+      .map((row) => `  ${row.email} (id=${row.id}) is owned by user ${row.userId}`)
+      .join("\n");
+
+    throw new Error(
+      `Transfer incomplete — ${rows.length} mailbox(es) are not owned by User ${destinationId}:\n` +
+        `${listed}\n\n` +
+        `Rolled back; nothing was changed.`,
+    );
+  }
+};
+
+// No child disagrees with its parent's owner.
+//
+// The composite foreign keys already make this unrepresentable, so this should
+// be impossible rather than merely unlikely. It is asserted anyway because the
+// cost is one query and the guarantee is a property of the current constraints,
+// not of this script — the same reasoning that keeps the explicit child UPDATEs
+// alongside the cascade.
+const verifyOwnershipConsistent = async (client: Client): Promise<void> => {
+  const { rows } = await client.query<{ relation: string; violations: string }>(
+    `SELECT 'Email -> GmailAccount' AS relation, count(*)::bigint AS violations
+       FROM "Email" e JOIN "GmailAccount" ga ON ga.id = e."gmailAccountId"
+      WHERE e."userId" IS DISTINCT FROM ga."userId"
+     UNION ALL
+     SELECT 'EventUpdate -> Event', count(*)
+       FROM "EventUpdate" eu JOIN "Event" ev ON ev.id = eu."eventId"
+      WHERE eu."userId" IS DISTINCT FROM ev."userId"
+     UNION ALL
+     SELECT 'EmailExtraction -> Email', count(*)
+       FROM "EmailExtraction" ex JOIN "Email" em ON em.id = ex."emailId"
+      WHERE ex."userId" IS DISTINCT FROM em."userId"
+     UNION ALL
+     SELECT 'Attachment -> Email', count(*)
+       FROM "Attachment" a JOIN "Email" em ON em.id = a."emailId"
+      WHERE a."userId" IS DISTINCT FROM em."userId"`,
+  );
+
+  const violations = rows.filter((row) => Number(row.violations) > 0);
+
+  if (violations.length > 0) {
+    const listed = violations
+      .map((row) => `  ${row.relation.padEnd(26)} ${row.violations}`)
+      .join("\n");
+
+    throw new Error(
+      `Transfer produced records whose owner disagrees with their parent's:\n` +
+        `${listed}\n\n` +
+        `Rolled back; nothing was changed.`,
+    );
+  }
+};
+
+// Move every record the placeholder owns to the resolved destination.
+//
+// One transaction for all six tables. The composite foreign keys compare a
+// child's owner against its parent's, so a partially applied transfer would
+// violate them — every table has to move together or not at all. Verification
+// runs inside the same transaction, so the only two outcomes are "fully
+// transferred and checked" and "nothing happened".
+const executeTransfer = async (
+  client: Client,
+  plan: TransferPlan,
+): Promise<TableHolding[]> => {
+  await client.query("BEGIN");
+
+  try {
+    const moved: TableHolding[] = [];
+
+    // Parents first. The composite foreign keys are ON UPDATE CASCADE, so
+    // moving a parent already drags its children along — a child table
+    // reporting 0 moved here means the cascade got there first, not that
+    // something was missed. The explicit updates remain because the cascade is
+    // a property of the current constraints, not a guarantee of this script.
+    for (const table of TABLES) {
+      const result = await client.query(
+        `UPDATE "${table}" SET "userId" = $1 WHERE "userId" = $2`,
+        [plan.destinationId, plan.legacyId],
+      );
+
+      moved.push({ table, count: result.rowCount ?? 0 });
+    }
+
+    await verifyPlaceholderReleased(client, plan.legacyId);
+    await verifyMailboxesTransferred(client, plan.mailboxIds, plan.destinationId);
+    await verifyOwnershipConsistent(client);
+
+    await client.query("COMMIT");
+
+    return moved;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+};
+
+const reportTransfer = (moved: TableHolding[]): void => {
+  console.log("Ownership transferred");
+
+  for (const entry of moved) {
+    console.log(`  ${entry.table.padEnd(16)} ${entry.count} moved directly`);
+  }
+
+  console.log("");
+  console.log("Post-transfer verification (inside the transaction)");
+  console.log("  placeholder owns nothing            OK");
+  console.log("  mapped mailboxes owned by target    OK");
+  console.log("  children agree with their parents   OK");
+  console.log("");
+};
+
 // --- main ------------------------------------------------------------------
 
 const main = async (): Promise<void> => {
@@ -551,35 +749,14 @@ const main = async (): Promise<void> => {
       return;
     }
 
-    // One transaction. The composite foreign keys added by
-    // 20260802030000_require_ownership compare a child's owner against its
-    // parent's, so a partially applied transfer would violate them — every
-    // table has to move together or not at all.
-    await client.query("BEGIN");
+    const moved = await executeTransfer(client, {
+      legacyId: placeholder.id,
+      destinationId: args.to,
+      mailboxIds: mappedMailboxIds(mappings),
+    });
 
-    try {
-      // Parents first. The composite foreign keys are ON UPDATE CASCADE, so
-      // moving a parent already drags its children along — a child table
-      // reporting 0 moved here means the cascade got there first, not that
-      // something was missed. The explicit updates remain because the cascade
-      // is a property of the current constraints, not a guarantee of this
-      // script.
-      for (const table of TABLES) {
-        const result = await client.query(
-          `UPDATE "${table}" SET "userId" = $1 WHERE "userId" = $2`,
-          [args.to, placeholder.id],
-        );
+    reportTransfer(moved);
 
-        console.log(`  ${table.padEnd(16)} ${result.rowCount} moved`);
-      }
-
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    }
-
-    console.log("");
     console.log(`Transferred ${total} record(s) to User ${args.to}.`);
     console.log(
       "The legacy owner row is left in place, disabled and owning nothing; it is harmless and records that a migration happened.",
