@@ -41,58 +41,64 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard">
-      <header className="dashboard-header">
-        <h1>Placement Tracker</h1>
-        <p className="dashboard-subtitle">
-          AI-powered placement event extraction and tracking
-        </p>
-      </header>
+      <div className="dashboard-container">
+        <header className="dashboard-header">
+          <h1>Track placement opportunities from your college emails</h1>
+          <p className="dashboard-subtitle">
+            AI-powered placement event extraction and tracking
+          </p>
+        </header>
 
-      <EmailInput refresh={fetchData} />
+        <main className="dashboard-main">
+          <EmailInput refresh={fetchData} />
 
-      {loading ? (
-        <div className="loading-state">
-          <span className="spinner" />
-          <span>Loading events…</span>
-        </div>
-      ) : (
-        <>
-          <section className="section">
-            <div className="section-header">
-              <h2>Upcoming Events</h2>
-              <span className="section-count">{upcomingEvents.length}</span>
+          {loading ? (
+            <div className="loading-state">
+              <span className="spinner" />
+              <span>Loading events…</span>
             </div>
-            {upcomingEvents.length === 0 ? (
-              <div className="empty-state">
-                <p>No events yet</p>
-                <p className="empty-hint">Paste an email above to get started</p>
-              </div>
-            ) : (
-              <div className="cards-grid">
-                {upcomingEvents.map((e) => (
-                  <EventCard key={e.id} event={e} />
-                ))}
-              </div>
-            )}
-          </section>
+          ) : (
+            <>
+              <section className="section">
+                <div className="section-header">
+                  <h2>Upcoming Events</h2>
+                  <span className="section-count">{upcomingEvents.length}</span>
+                </div>
+                {upcomingEvents.length === 0 ? (
+                  <div className="empty-state">
+                    <p>No events yet</p>
+                    <p className="empty-hint">
+                      Paste an email above to get started
+                    </p>
+                  </div>
+                ) : (
+                  <div className="cards-grid">
+                    {upcomingEvents.map((e) => (
+                      <EventCard key={e.id} event={e} />
+                    ))}
+                  </div>
+                )}
+              </section>
 
-          {reviewEvents.length > 0 && (
-            <section className="section">
-              <div className="section-header">
-                <h2>Needs Review</h2>
-                <span className="section-count section-count-review">
-                  {reviewEvents.length}
-                </span>
-              </div>
-              <div className="cards-grid">
-                {reviewEvents.map((e) => (
-                  <ReviewCard key={e.id} event={e} refresh={fetchData} />
-                ))}
-              </div>
-            </section>
+              {reviewEvents.length > 0 && (
+                <section className="section">
+                  <div className="section-header">
+                    <h2>Needs Review</h2>
+                    <span className="section-count section-count-review">
+                      {reviewEvents.length}
+                    </span>
+                  </div>
+                  <div className="cards-grid">
+                    {reviewEvents.map((e) => (
+                      <ReviewCard key={e.id} event={e} refresh={fetchData} />
+                    ))}
+                  </div>
+                </section>
+              )}
+            </>
           )}
-        </>
-      )}
+        </main>
+      </div>
     </div>
   );
 }
