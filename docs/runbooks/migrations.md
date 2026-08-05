@@ -29,14 +29,19 @@ Phase 3.
 
 # Prerequisites
 
-- `backend/.env` with `DATABASE_URL` naming the intended database
+- `backend/.env` with **both** `DATABASE_URL` (pooled) and `DIRECT_DATABASE_URL`
+  (direct) naming the intended database
 - `npx prisma generate` has been run
 - For sandbox verification only: `pg_dump` and `pg_restore` on `PATH`, or
   `PG_DUMP`/`PG_RESTORE` set, or a running Postgres container
 
-> `DATABASE_URL` configures the Prisma CLI **and** the application runtime
-> together. Changing it changes where migrations are applied and where the API
-> connects. Confirm the `Datasource "db": …` line the CLI prints before acting.
+> The Prisma CLI reads **`DIRECT_DATABASE_URL`** (via `prisma.config.ts`); the
+> application runtime reads `DATABASE_URL`. Migrate needs the unpooled endpoint
+> because it takes a session-level advisory lock that a transaction pooler cannot
+> hold. Point both at the same database — a mismatch means migrations alter one
+> database while the API talks to another, silently. Confirm the
+> `Datasource "db": …` line the CLI prints before acting; it echoes the direct
+> host.
 
 ---
 

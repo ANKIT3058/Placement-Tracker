@@ -10,10 +10,13 @@ export const createEmail = async (email: EmailInput) => {
   // metadata all persist, or none do. Duplicate emails are guarded upstream in
   // the sync flow (existing gmailMessageId short-circuits before create), so
   // attachment metadata is never inserted twice.
-  // Ownership is copied onto the Attachment rows as well as the Email. They
-  // must agree: AC-5.11 attaches a composite foreign key to Email(id, userId)
-  // that makes disagreement unrepresentable (RFC-001 §12.3), and writing them
-  // together now means that migration has nothing to reconcile.
+  // Ownership reaches the Attachment rows without being written here. The
+  // composite foreign key on Attachment(emailId, userId) -> Email(id, userId)
+  // (RFC-001 §12.3) makes both columns relation scalars of the `email`
+  // relation, so Prisma omits them from the nested create input and populates
+  // them from the parent row it just inserted. Passing `userId` explicitly is
+  // now rejected as an unknown argument — and would be redundant anyway, since
+  // the constraint already makes disagreement unrepresentable.
   const userId = email.userId;
 
   return prisma.email.create({
@@ -31,7 +34,6 @@ export const createEmail = async (email: EmailInput) => {
               filename: attachment.filename,
               mimeType: attachment.mimeType,
               size: attachment.size,
-              userId,
             })),
           }
         : undefined,

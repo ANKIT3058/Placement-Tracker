@@ -8,6 +8,16 @@ generator client {
   output   = "../generated/prisma"
 }
 
+// No connection URL here, and none is possible: Prisma 7 removed both `url` and
+// `directUrl` from the schema file (P1012 — "no longer supported in schema
+// files"). Connection configuration moved out of the schema entirely:
+//
+//   Prisma Migrate / db  →  `datasource.url` in prisma.config.ts
+//                           (DIRECT_DATABASE_URL — unpooled)
+//   Prisma Client        →  the adapter passed to the PrismaClient constructor
+//                           in src/lib/prisma.ts (DATABASE_URL — pooled)
+//
+// The pooled/direct split therefore lives in those two files, not here.
 datasource db {
   provider = "postgresql"
 }

@@ -193,7 +193,8 @@ cd backend && cp .env.example .env
 
 | Variable | Required | Purpose | Example format |
 |---|---|---|---|
-| `DATABASE_URL` | **Yes** | Connection string. Read by **both** the Prisma CLI (via `prisma.config.ts`) and the runtime `pg` Pool in `src/lib/prisma.ts`. Single source of truth — see below. | `postgresql://USER:PASS@HOST:5435/placement?schema=public` |
+| `DATABASE_URL` | **Yes** | **Pooled** connection string. Read by the runtime `pg` Pool in `src/lib/prisma.ts` and handed to the `PrismaPg` adapter. Not used by the Prisma CLI — see below. | `postgresql://USER:PASS@HOST-pooler:5432/db?sslmode=require` |
+| `DIRECT_DATABASE_URL` | **Yes** | **Direct** (unpooled) connection string. Read by `prisma.config.ts` and used by `prisma migrate`, `prisma db` and `prisma studio`. On a local Postgres there is no pooler, so set it to the same value as `DATABASE_URL`. | `postgresql://USER:PASS@HOST:5432/db?sslmode=require` |
 | `REDIS_URL` | **Yes** | BullMQ / ioredis connection. Typed non-null (`process.env.REDIS_URL!`), but at runtime an unset value falls through to ioredis defaults (`127.0.0.1:6379`) rather than throwing — so a missing value surfaces as a connection error, not a config error. | `redis://localhost:6379` |
 | `FRONTEND_URL` | **Yes** | CORS origin. An unset value makes `cors` reflect no origin and browser calls from the client fail. | `http://localhost:5173` |
 | `GOOGLE_CLIENT_ID` | **Yes**, for Gmail | OAuth client id. | `<id>.apps.googleusercontent.com` |
@@ -215,30 +216,46 @@ cd backend && cp .env.example .env
 > **Nothing currently uses it** — both API modules read `VITE_API_URL` and build
 > absolute URLs. Set `VITE_API_URL`; do not rely on the proxy.
 
-## How DATABASE_URL is resolved
+## How the database URLs are resolved
 
-Both consumers read the same variable. There is nothing to keep in sync.
+The runtime and the migration engine read **different** variables, pointing at
+the same database through different endpoints.
 
-| Consumer | Reads from |
-|---|---|
-| Application runtime (`src/lib/prisma.ts`) | `process.env.DATABASE_URL` |
-| Prisma CLI (`generate`, `migrate`, `studio`) | `env("DATABASE_URL")` in `backend/prisma.config.ts` |
+| Consumer | Reads from | Endpoint |
+|---|---|---|
+| Application runtime (`src/lib/prisma.ts`) | `process.env.DATABASE_URL` | **Pooled** |
+| Prisma CLI (`generate`, `migrate`, `db`, `studio`) | `env("DIRECT_DATABASE_URL")` in `backend/prisma.config.ts` | **Direct** |
 
-`prisma/schema.prisma` declares no `url`; `prisma.config.ts` supplies it using
-Prisma's `env()` helper, which **throws when the variable is unset**
-(`Cannot resolve environment variable: DATABASE_URL`) rather than falling back to
-anything. Both paths load `.env` through `dotenv/config`, and because `dotenv`
-does not overwrite variables already present in the process, an explicitly
-exported `DATABASE_URL` takes precedence over the file — which is the supported
-way to target a different database for a single command:
+**Why they differ.** Migrate takes a *session-level* advisory lock to serialise
+concurrent deploys. A transaction pooler such as PgBouncer cannot hold one — the
+lock is acquired on one backend and released to another — and DDL through a
+transaction pooler is unsafe for the same reason. The runtime wants the
+opposite: many short-lived queries across concurrent handlers, where connection
+reuse is the point. On a local Postgres there is no pooler, so both variables
+hold the same value.
+
+**Where they are declared.** `prisma/schema.prisma` declares neither. Prisma 7
+removed `url` and `directUrl` from schema files — declaring either raises
+`P1012: The datasource property 'url' is no longer supported in schema files`.
+The split is therefore expressed by which side reads which variable:
+`prisma.config.ts` for Migrate, the `PrismaPg` adapter for the client.
+
+`env()` **throws when the variable is unset**
+(`Cannot resolve environment variable: DIRECT_DATABASE_URL`) rather than falling
+back — so a missing direct URL fails loudly instead of silently routing
+migrations through the pooler. Both paths load `.env` through `dotenv/config`,
+and because `dotenv` does not overwrite variables already present in the
+process, an explicitly exported value takes precedence over the file — the
+supported way to target a different database for a single command:
 
 ```bash
-DATABASE_URL="postgresql://…" npx prisma migrate status
+DIRECT_DATABASE_URL="postgresql://…" npx prisma migrate status
 ```
 
-> Changing `DATABASE_URL` changes where migrations are applied **and** where the
-> API connects, together. Confirm which database it names before running any
-> `prisma migrate` command.
+> These two variables now move independently. Point them at the same database —
+> a mismatch means the API talks to one and migrations alter another, with
+> nothing reporting it. Confirm the `Datasource "db": …` line the CLI prints
+> before running any `prisma migrate` command; it echoes the **direct** host.
 
 ---
 
