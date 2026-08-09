@@ -302,6 +302,69 @@ code {
   gap: var(--space-4);
 }
 
+/* ── Dashboard: section search ────────────────────────────
+   Borrows .field-input's shape and focus ring so the dashboard's
+   controls stay visually of a piece. */
+
+.section-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: var(--space-4);
+  /* Long enough to read a company name, short enough not to look like
+     a page-wide filter bar. */
+  max-width: 380px;
+}
+
+.section-search__icon {
+  position: absolute;
+  left: 11px;
+  width: 15px;
+  height: 15px;
+  color: var(--text);
+  /* Decorative: clicks fall through to the input beneath. */
+  pointer-events: none;
+}
+
+.section-search__input {
+  font: inherit;
+  font-size: 14px;
+  width: 100%;
+  padding: 8px 12px 8px 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text-h);
+  box-sizing: border-box;
+  /* Transparent, not `none` — see .field-input. */
+  outline: 2px solid transparent;
+  outline-offset: 2px;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    box-shadow var(--t-fast) var(--ease);
+}
+
+.section-search__input::placeholder {
+  color: var(--text);
+  opacity: 1;
+}
+
+.section-search__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+@media (max-width: 640px) {
+  .section-search {
+    max-width: none;
+  }
+
+  .section-search__input {
+    /* 16px avoids iOS Safari's zoom-on-focus for form fields. */
+    font-size: 16px;
+  }
+}
+
 /* ── Card: shared shell ───────────────────────────────────
    Base surface for EventCard and ReviewCard. Component-specific
    rules live in their own blocks below and must not leak in here. */

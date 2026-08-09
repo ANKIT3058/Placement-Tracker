@@ -10,6 +10,24 @@ import EmailInput from "../components/EmailInput";
    without pushing the fold down on mobile. */
 const SKELETON_CARDS = ["a", "b", "c"];
 
+function SearchIcon() {
+  return (
+    <svg
+      className="section-search__icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.9-3.9" />
+    </svg>
+  );
+}
+
 interface Event {
   id: number;
   company: string;
@@ -24,6 +42,7 @@ interface Event {
 export default function Dashboard() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -44,6 +63,13 @@ export default function Dashboard() {
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
   const reviewEvents = events.filter((e) => e.status === "review");
+
+  /* Derived, not stored: the filter is a view of upcomingEvents, so it
+     can never drift out of sync with the fetched data. */
+  const query = search.trim().toLowerCase();
+  const visibleEvents = query
+    ? upcomingEvents.filter((e) => e.company.toLowerCase().includes(query))
+    : upcomingEvents;
 
   return (
     <div className="dashboard">
@@ -80,17 +106,51 @@ export default function Dashboard() {
               <section className="section">
                 <div className="section-header">
                   <h2>Upcoming Events</h2>
-                  <span className="section-count">{upcomingEvents.length}</span>
+                  <span className="section-count">{visibleEvents.length}</span>
                 </div>
+
+                {/* Nothing to search through until there are events, so the
+                    field stays out of the way of the first-run empty state. */}
+                {upcomingEvents.length > 0 && (
+                  <div className="section-search">
+                    <label className="sr-only" htmlFor="event-search">
+                      Search events by company
+                    </label>
+                    <SearchIcon />
+                    <input
+                      id="event-search"
+                      type="search"
+                      className="section-search__input"
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Search by company"
+                    />
+                  </div>
+                )}
+
+                {/* Always mounted so the live region exists before it has
+                    anything to announce. */}
+                <p className="sr-only" role="status" aria-live="polite">
+                  {query
+                    ? `${visibleEvents.length} of ${upcomingEvents.length} events match ${search.trim()}`
+                    : ""}
+                </p>
+
                 {upcomingEvents.length === 0 ? (
                   <EmptyState
                     icon="calendar"
                     title="No events yet"
                     description="Paste a placement email above and the extracted events will show up here."
                   />
+                ) : visibleEvents.length === 0 ? (
+                  <EmptyState
+                    icon="search"
+                    title="No matching events"
+                    description={`No company matches “${search.trim()}”. Try a shorter or different term.`}
+                  />
                 ) : (
                   <div className="cards-grid">
-                    {upcomingEvents.map((e) => (
+                    {visibleEvents.map((e) => (
                       <EventCard key={e.id} event={e} />
                     ))}
                   </div>

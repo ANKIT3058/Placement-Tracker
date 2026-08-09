@@ -26,6 +26,12 @@ const ICONS = {
       <path d="m8.5 12 2.5 2.5 4.5-5" />
     </svg>
   ),
+  search: (
+    <svg {...iconProps}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.9-3.9" />
+    </svg>
+  ),
 };
 
 export default function EmptyState({
