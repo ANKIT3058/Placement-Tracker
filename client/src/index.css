@@ -826,9 +826,27 @@ code {
   cursor: not-allowed;
 }
 
+/* Primary action of the email form. Scoped overrides only — the .btn
+   base above is shared with the review card and stays as-is. */
 .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  /* Taller than the base button: comfortably above the 44px touch target. */
+  padding: 11px 18px;
   background: var(--accent);
   color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.btn-primary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.btn-primary:disabled {
+  box-shadow: none;
 }
 
 /* Primary action of the review card. Scoped overrides only — the .btn
@@ -882,43 +900,69 @@ code {
 
 /* ── Email input section ──────────────────────────────── */
 
+/* Reads top to bottom as: what this does (header), the input, then the
+   action and its feedback. Scoped to the email form; the shared .card
+   shell and the .btn base are deliberately left alone. */
+
+/* ── Email input: shell & header ──────────────────────── */
+
 .email-section {
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 18px 20px;
+  border-radius: 12px;
+  padding: var(--space-5);
   /* Spacing below is owned by .dashboard-content's gap. */
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-4);
+}
+
+.email-section__header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
 .email-section h2 {
   margin: 0;
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.2px;
+  color: var(--text-h);
 }
 
 .email-hint {
   font-size: 13px;
+  line-height: 1.5;
   color: var(--text);
   margin: 0;
+  max-width: 60ch;
 }
+
+/* ── Email input: textarea ────────────────────────────── */
 
 .email-textarea {
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.65;
-  padding: 10px 12px;
+  padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--code-bg);
   color: var(--text-h);
+  /* Vertical-only: horizontal resize would break the card's width. */
   resize: vertical;
+  min-height: 140px;
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
   width: 100%;
   box-sizing: border-box;
+}
+
+.email-textarea::placeholder {
+  color: var(--text);
+  opacity: 0.6;
 }
 
 .email-textarea:focus {
@@ -928,18 +972,90 @@ code {
 
 .email-textarea:disabled {
   opacity: 0.55;
+  cursor: not-allowed;
 }
+
+/* ── Email input: footer & feedback ───────────────────── */
 
 .email-footer {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: var(--space-3);
 }
 
-.success-msg {
+/* Always rendered, even when empty, so the aria-live region is present
+   in the DOM before it has anything to announce. */
+.email-status {
+  margin: 0;
+  min-width: 0;
+}
+
+.email-count {
+  /* Pushed to the trailing edge; secondary to the action beside it. */
+  margin-left: auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.email-message {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
   font-size: 13px;
   font-weight: 500;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.email-message__icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  /* Centres the icon against the first line of the message. */
+  margin-top: 1px;
+}
+
+.email-message--success {
   color: var(--green);
+}
+
+/* Errors get a full-width tinted block rather than inline text: a failed
+   submit must not be quieter than the success it replaces. */
+.email-message--error {
+  display: flex;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 8px;
+  border: 1px solid var(--red-border);
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+/* ── Email input: responsive ──────────────────────────── */
+
+@media (max-width: 640px) {
+  .email-section {
+    padding: var(--space-4);
+  }
+
+  .email-textarea {
+    /* 16px avoids iOS Safari's zoom-on-focus for form fields. */
+    font-size: 16px;
+    min-height: 120px;
+  }
+
+  /* Full-width action; the counter moves onto its own line beside it. */
+  .email-footer .btn-primary {
+    flex: 1 1 100%;
+  }
+
+  .email-count {
+    margin-left: 0;
+  }
 }
 
 /* ── Dashboard: loading & empty states ────────────────── */
