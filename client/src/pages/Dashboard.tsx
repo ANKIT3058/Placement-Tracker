@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getEvents } from "../api/eventApi";
 import EventCard from "../components/EventCard";
 import EventCardSkeleton from "../components/EventCardSkeleton";
+import EmptyState from "../components/EmptyState";
 import ReviewCard from "../components/ReviewCard";
 import EmailInput from "../components/EmailInput";
 
@@ -82,12 +83,11 @@ export default function Dashboard() {
                   <span className="section-count">{upcomingEvents.length}</span>
                 </div>
                 {upcomingEvents.length === 0 ? (
-                  <div className="empty-state">
-                    <p>No events yet</p>
-                    <p className="empty-hint">
-                      Paste an email above to get started
-                    </p>
-                  </div>
+                  <EmptyState
+                    icon="calendar"
+                    title="No events yet"
+                    description="Paste a placement email above and the extracted events will show up here."
+                  />
                 ) : (
                   <div className="cards-grid">
                     {upcomingEvents.map((e) => (
@@ -97,21 +97,34 @@ export default function Dashboard() {
                 )}
               </section>
 
-              {reviewEvents.length > 0 && (
-                <section className="section">
-                  <div className="section-header">
-                    <h2>Needs Review</h2>
-                    <span className="section-count section-count-review">
-                      {reviewEvents.length}
-                    </span>
-                  </div>
+              <section className="section">
+                <div className="section-header">
+                  <h2>Needs Review</h2>
+                  {/* Amber reads as "needs attention" — wrong signal for a
+                      count of zero, so the chip stays neutral when empty. */}
+                  <span
+                    className={`section-count ${
+                      reviewEvents.length > 0 ? "section-count-review" : ""
+                    }`}
+                  >
+                    {reviewEvents.length}
+                  </span>
+                </div>
+                {reviewEvents.length === 0 ? (
+                  <EmptyState
+                    icon="check"
+                    tone="positive"
+                    title="Nothing needs review"
+                    description="Events the AI wasn't confident about land here so you can correct and confirm them."
+                  />
+                ) : (
                   <div className="cards-grid">
                     {reviewEvents.map((e) => (
                       <ReviewCard key={e.id} event={e} refresh={fetchData} />
                     ))}
                   </div>
-                </section>
-              )}
+                )}
+              </section>
             </>
           )}
         </main>
