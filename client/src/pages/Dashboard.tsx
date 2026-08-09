@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { getEvents } from "../api/eventApi";
 import EventCard from "../components/EventCard";
+import EventCardSkeleton from "../components/EventCardSkeleton";
 import ReviewCard from "../components/ReviewCard";
 import EmailInput from "../components/EmailInput";
+
+/* Stable keys for the placeholder cards. Three fills a desktop row
+   without pushing the fold down on mobile. */
+const SKELETON_CARDS = ["a", "b", "c"];
 
 interface Event {
   id: number;
@@ -53,10 +58,22 @@ export default function Dashboard() {
           <EmailInput refresh={fetchData} />
 
           {loading ? (
-            <div className="loading-state">
-              <span className="spinner" />
-              <span>Loading events…</span>
-            </div>
+            <section className="section" aria-busy="true">
+              {/* Mirrors the loaded section header so the heading doesn't
+                  appear out of nowhere once the fetch resolves. */}
+              <div className="section-header">
+                <h2>Upcoming Events</h2>
+                <span className="skeleton skeleton--count" aria-hidden="true" />
+              </div>
+              <p className="sr-only" role="status">
+                Loading events…
+              </p>
+              <div className="cards-grid">
+                {SKELETON_CARDS.map((key) => (
+                  <EventCardSkeleton key={key} />
+                ))}
+              </div>
+            </section>
           ) : (
             <>
               <section className="section">
