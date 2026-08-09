@@ -302,15 +302,23 @@ code {
   gap: var(--space-4);
 }
 
-/* ── Dashboard: section search ────────────────────────────
-   Borrows .field-input's shape and focus ring so the dashboard's
-   controls stay visually of a piece. */
+/* ── Dashboard: section controls ──────────────────────────
+   Search and stage chips. Borrows .field-input's shape and focus ring
+   so the dashboard's controls stay visually of a piece. */
+
+/* Owns the spacing between the controls and the grid below, so neither
+   control carries a margin of its own. */
+.section-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
 
 .section-search {
   position: relative;
   display: flex;
   align-items: center;
-  margin-bottom: var(--space-4);
   /* Long enough to read a company name, short enough not to look like
      a page-wide filter bar. */
   max-width: 380px;
@@ -354,6 +362,45 @@ code {
   box-shadow: 0 0 0 3px var(--accent-bg);
 }
 
+/* ── Dashboard: stage filter chips ────────────────────── */
+
+/* Wraps rather than scrolls: five short chips fit two rows at the
+   narrowest width, and nothing ends up hidden off-screen. */
+.section-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.filter-chip {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+/* Hover only hints; the active state below is what reads as selected. */
+.filter-chip:hover:not(.is-active) {
+  border-color: var(--accent-border);
+  color: var(--text-h);
+}
+
+.filter-chip.is-active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
 @media (max-width: 640px) {
   .section-search {
     max-width: none;
@@ -362,6 +409,11 @@ code {
   .section-search__input {
     /* 16px avoids iOS Safari's zoom-on-focus for form fields. */
     font-size: 16px;
+  }
+
+  /* Taller tap targets once the chips are thumb-operated. */
+  .filter-chip {
+    padding: 9px 15px;
   }
 }
 

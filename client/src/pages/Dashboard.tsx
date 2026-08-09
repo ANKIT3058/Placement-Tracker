@@ -10,6 +10,19 @@ import EmailInput from "../components/EmailInput";
    without pushing the fold down on mobile. */
 const SKELETON_CARDS = ["a", "b", "c"];
 
+/* The extraction pipeline emits one of four canonical stages, but
+   ReviewCard lets a reviewer retype the field freehand — so each chip
+   matches its canonical value plus the same variants EventCard's badge
+   map already recognises. Word boundaries keep "OA" from matching
+   incidental letter pairs. */
+const STAGE_FILTERS: { id: string; label: string; pattern: RegExp | null }[] = [
+  { id: "all", label: "All", pattern: null },
+  { id: "registration", label: "Registration", pattern: /\bregistrations?\b|\bregister\b/i },
+  { id: "oa", label: "OA", pattern: /\boa\b|\bonline assessment\b|\bassessment\b/i },
+  { id: "interview", label: "Interview", pattern: /\binterview\b/i },
+  { id: "ppt", label: "PPT", pattern: /\bppt\b|\bpre[-\s]?placement talk\b/i },
+];
+
 function SearchIcon() {
   return (
     <svg
@@ -43,6 +56,7 @@ export default function Dashboard() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [stageId, setStageId] = useState("all");
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -65,11 +79,26 @@ export default function Dashboard() {
   const reviewEvents = events.filter((e) => e.status === "review");
 
   /* Derived, not stored: the filter is a view of upcomingEvents, so it
-     can never drift out of sync with the fetched data. */
-  const query = search.trim().toLowerCase();
-  const visibleEvents = query
-    ? upcomingEvents.filter((e) => e.company.toLowerCase().includes(query))
-    : upcomingEvents;
+     can never drift out of sync with the fetched data. Search and stage
+     are two predicates over one pass — adding a third would go here. */
+  const term = search.trim();
+  const query = term.toLowerCase();
+  const activeStage =
+    STAGE_FILTERS.find((f) => f.id === stageId) ?? STAGE_FILTERS[0];
+
+  const visibleEvents = upcomingEvents.filter(
+    (e) =>
+      (!query || e.company.toLowerCase().includes(query)) &&
+      (!activeStage.pattern || activeStage.pattern.test(e.stage)),
+  );
+
+  const stageLabel = activeStage.pattern ? activeStage.label : null;
+  const noMatchDescription =
+    term && stageLabel
+      ? `No ${stageLabel} events match “${term}”. Try another stage or term.`
+      : term
+        ? `No company matches “${term}”. Try a shorter or different term.`
+        : `No ${stageLabel} events coming up. Pick another stage to see more.`;
 
   return (
     <div className="dashboard">
@@ -112,27 +141,49 @@ export default function Dashboard() {
                 {/* Nothing to search through until there are events, so the
                     field stays out of the way of the first-run empty state. */}
                 {upcomingEvents.length > 0 && (
-                  <div className="section-search">
-                    <label className="sr-only" htmlFor="event-search">
-                      Search events by company
-                    </label>
-                    <SearchIcon />
-                    <input
-                      id="event-search"
-                      type="search"
-                      className="section-search__input"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search by company"
-                    />
+                  <div className="section-controls">
+                    <div className="section-search">
+                      <label className="sr-only" htmlFor="event-search">
+                        Search events by company
+                      </label>
+                      <SearchIcon />
+                      <input
+                        id="event-search"
+                        type="search"
+                        className="section-search__input"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search by company"
+                      />
+                    </div>
+
+                    <div
+                      className="section-filters"
+                      role="group"
+                      aria-label="Filter by stage"
+                    >
+                      {STAGE_FILTERS.map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          className={`filter-chip ${
+                            f.id === stageId ? "is-active" : ""
+                          }`}
+                          aria-pressed={f.id === stageId}
+                          onClick={() => setStageId(f.id)}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
 
                 {/* Always mounted so the live region exists before it has
                     anything to announce. */}
                 <p className="sr-only" role="status" aria-live="polite">
-                  {query
-                    ? `${visibleEvents.length} of ${upcomingEvents.length} events match ${search.trim()}`
+                  {query || stageLabel
+                    ? `${visibleEvents.length} of ${upcomingEvents.length} events match the current filters`
                     : ""}
                 </p>
 
@@ -146,7 +197,7 @@ export default function Dashboard() {
                   <EmptyState
                     icon="search"
                     title="No matching events"
-                    description={`No company matches “${search.trim()}”. Try a shorter or different term.`}
+                    description={noMatchDescription}
                   />
                 ) : (
                   <div className="cards-grid">
