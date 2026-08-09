@@ -3,6 +3,7 @@ import { getEvents } from "../api/eventApi";
 import EventCard from "../components/EventCard";
 import EventCardSkeleton from "../components/EventCardSkeleton";
 import EmptyState from "../components/EmptyState";
+import EventDetailsDrawer from "../components/EventDetailsDrawer";
 import ReviewCard from "../components/ReviewCard";
 import EmailInput from "../components/EmailInput";
 
@@ -57,6 +58,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [stageId, setStageId] = useState("all");
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -202,7 +204,11 @@ export default function Dashboard() {
                 ) : (
                   <div className="cards-grid">
                     {visibleEvents.map((e) => (
-                      <EventCard key={e.id} event={e} />
+                      <EventCard
+                        key={e.id}
+                        event={e}
+                        onSelect={() => setSelectedEvent(e)}
+                      />
                     ))}
                   </div>
                 )}
@@ -240,6 +246,15 @@ export default function Dashboard() {
           )}
         </main>
       </div>
+
+      {/* Mounting only while open lets the drawer call showModal() once on
+          mount and lets the browser restore focus to the card on close. */}
+      {selectedEvent && (
+        <EventDetailsDrawer
+          event={selectedEvent}
+          onClose={() => setSelectedEvent(null)}
+        />
+      )}
     </div>
   );
 }

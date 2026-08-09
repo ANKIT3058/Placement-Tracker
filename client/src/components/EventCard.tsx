@@ -1,3 +1,11 @@
+import {
+  STAGE_BADGE,
+  STATUS_TONE,
+  confidenceMeta,
+  formatDateTime,
+  titleCase,
+} from "../lib/eventDisplay";
+
 interface Event {
   id: number;
   company: string;
@@ -6,49 +14,6 @@ interface Event {
   venue: string | null;
   confidence: number;
   status: string;
-}
-
-const STAGE_BADGE: Record<string, string> = {
-  OA: "badge-oa",
-  "Online Assessment": "badge-oa",
-  Interview: "badge-interview",
-  "Tech Interview": "badge-interview",
-  "HR Interview": "badge-interview",
-  PPT: "badge-ppt",
-  "Pre-Placement Talk": "badge-ppt",
-};
-
-/* Presentation-only tone for the status chip. Unknown values fall back
-   to the neutral tone, so a new backend status never breaks the card. */
-const STATUS_TONE: Record<string, string> = {
-  confirmed: "status-confirmed",
-  scheduled: "status-scheduled",
-  review: "status-review",
-};
-
-function titleCase(str: string): string {
-  return str.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-/* Date and time are returned separately so the card can present the date
-   as the primary line and the time as a secondary one. `time` is null for
-   midnight timestamps, i.e. dates the email carried without a clock time. */
-function formatDateTime(dateStr: string): { date: string; time: string | null } {
-  const d = new Date(dateStr);
-  const date = d.toLocaleDateString("en-GB", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-  const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
-  if (!hasTime) return { date, time: null };
-  const time = d.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-  return { date, time };
 }
 
 /* Inline icons — no icon dependency, and they inherit `currentColor`
@@ -91,14 +56,18 @@ function VenueIcon() {
   );
 }
 
-export default function EventCard({ event }: { event: Event }) {
-  const { confidence } = event;
-
-  const confLabel =
-    confidence > 0.8 ? "High" : confidence > 0.5 ? "Medium" : "Low";
-  const confClass =
-    confidence > 0.8 ? "conf-high" : confidence > 0.5 ? "conf-medium" : "conf-low";
-  const confPercent = Number((confidence * 100).toFixed(0));
+export default function EventCard({
+  event,
+  onSelect,
+}: {
+  event: Event;
+  onSelect: () => void;
+}) {
+  const {
+    label: confLabel,
+    tone: confClass,
+    percent: confPercent,
+  } = confidenceMeta(event.confidence);
 
   const badgeClass = STAGE_BADGE[event.stage] ?? "badge-default";
   const statusClass = STATUS_TONE[event.status] ?? "status-default";
@@ -107,7 +76,23 @@ export default function EventCard({ event }: { event: Event }) {
   const { date, time } = formatDateTime(event.date);
 
   return (
-    <article className="card event-card">
+    /* role="button" rather than a real <button>: the card holds a heading
+       and structured rows that a button would flatten. aria-label gives it
+       a clean name instead of the whole card's text. */
+    <article
+      className="card event-card"
+      role="button"
+      tabIndex={0}
+      aria-haspopup="dialog"
+      aria-label={`View details for ${company}`}
+      onClick={onSelect}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+    >
       <header className="event-card__header">
         <h3 className="event-card__company" title={company}>
           {company}

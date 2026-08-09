@@ -452,6 +452,10 @@ code {
   padding: var(--space-4);
   gap: var(--space-3);
   border-radius: 12px;
+  /* Honest again as of the details drawer: the card really does activate. */
+  cursor: pointer;
+  /* Long company names must not widen the grid cell on a role=button. */
+  text-align: left;
   transition:
     box-shadow var(--t-base) var(--ease),
     transform var(--t-base) var(--ease),
@@ -1210,6 +1214,226 @@ code {
 
   .email-count {
     margin-left: 0;
+  }
+}
+
+/* ── Event details drawer ─────────────────────────────────
+   A native <dialog> opened with showModal(), so Escape, the focus
+   trap and background inertness come from the platform. These rules
+   only undo the element's centred defaults and dress the panel. */
+
+.drawer {
+  /* Pins the dialog to the right edge, full height. */
+  margin: 0 0 0 auto;
+  padding: 0;
+  width: min(420px, 100%);
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: -8px 0 28px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+
+.drawer::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.drawer[open] {
+  animation: drawer-in var(--t-base) var(--ease);
+}
+
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+/* ── Event details drawer: panel ──────────────────────── */
+
+.drawer__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  height: 100%;
+  padding: var(--space-5);
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.drawer__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.drawer__eyebrow {
+  margin: 0 0 var(--space-1);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text);
+}
+
+.drawer__title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.3px;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+.drawer__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+
+.drawer__close:hover {
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+/* ── Event details drawer: rows ───────────────────────── */
+
+.drawer__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.drawer__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer__label {
+  flex: 0 0 96px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text);
+}
+
+.drawer__value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+.drawer__muted {
+  font-style: italic;
+  font-weight: 400;
+  color: var(--text);
+}
+
+/* Wider than the card's 34px meter — the drawer has room to make the
+   proportion readable. Tone comes from the shared .conf-* classes. */
+.drawer__meter {
+  flex: 0 0 auto;
+  width: 76px;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.drawer__meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tone);
+}
+
+.drawer__conf-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--tone);
+  white-space: nowrap;
+}
+
+.drawer__note {
+  margin: auto 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* ── Event details drawer: responsive & motion ────────── */
+
+/* Bottom sheet on small screens: a side panel at 375px is just a
+   full-screen takeover with extra steps. */
+@media (max-width: 640px) {
+  .drawer {
+    margin: auto auto 0;
+    width: 100%;
+    height: auto;
+    max-height: 88%;
+    border-left: none;
+    border-top: 1px solid var(--border);
+    border-radius: 14px 14px 0 0;
+    box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.14);
+  }
+
+  .drawer[open] {
+    animation-name: drawer-in-up;
+  }
+
+  .drawer__panel {
+    padding: var(--space-4);
+  }
+
+  .drawer__row {
+    /* Label above value once the row runs out of horizontal room. */
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  .drawer__label {
+    flex: 0 0 auto;
+  }
+}
+
+@keyframes drawer-in-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer[open] {
+    animation: none;
   }
 }
 
