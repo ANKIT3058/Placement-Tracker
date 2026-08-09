@@ -6,15 +6,7 @@ import {
   titleCase,
 } from "../lib/eventDisplay";
 
-interface Event {
-  id: number;
-  company: string;
-  stage: string;
-  date: string;
-  venue: string | null;
-  confidence: number;
-  status: string;
-}
+import type { Event } from "../types/event";
 
 /* Inline icons — no icon dependency, and they inherit `currentColor`
    so they follow the light/dark theme automatically. */
@@ -73,7 +65,11 @@ export default function EventCard({
   const statusClass = STATUS_TONE[event.status] ?? "status-default";
 
   const company = titleCase(event.company);
-  const { date, time } = formatDateTime(event.date);
+  const { date, time, hasTime } = formatDateTime(
+    event.date,
+    event.time,
+    event.isTimeEstimated,
+  );
 
   return (
     /* role="button" rather than a real <button>: the card holds a heading
@@ -105,7 +101,10 @@ export default function EventCard({
           <CalendarIcon />
           <span className="event-detail__content">
             <span className="event-detail__primary">{date}</span>
-            {time && (
+            {/* Unchanged behaviour: the compact card omits the row when no
+                time is known rather than spending a line on "Not specified".
+                The drawer states it explicitly. */}
+            {hasTime && (
               <span className="event-detail__secondary">
                 <ClockIcon />
                 {time}

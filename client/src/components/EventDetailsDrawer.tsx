@@ -7,15 +7,7 @@ import {
   titleCase,
 } from "../lib/eventDisplay";
 
-interface Event {
-  id: number;
-  company: string;
-  stage: string;
-  date: string;
-  venue: string | null;
-  confidence: number;
-  status: string;
-}
+import type { Event } from "../types/event";
 
 function CloseIcon() {
   return (
@@ -53,7 +45,11 @@ export default function EventDetailsDrawer({
   }, []);
 
   const company = titleCase(event.company);
-  const { date, time } = formatDateTime(event.date);
+  const { date, time, hasTime } = formatDateTime(
+    event.date,
+    event.time,
+    event.isTimeEstimated,
+  );
   const {
     label: confLabel,
     tone: confTone,
@@ -108,7 +104,7 @@ export default function EventDetailsDrawer({
           <div className="drawer__row">
             <dt className="drawer__label">Time</dt>
             <dd className="drawer__value">
-              {time ?? <span className="drawer__muted">Not specified</span>}
+              {hasTime ? time : <span className="drawer__muted">{time}</span>}
             </dd>
           </div>
 

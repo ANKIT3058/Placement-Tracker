@@ -8,7 +8,10 @@ interface ReviewEvent {
   /* Already present on the event payload the Dashboard passes down;
      surfaced here so the reviewer can see how unsure the extraction was. */
   confidence?: number;
-  reviewReason?: string;
+  /* Nullable, not merely optional: the column is `String?`, so the API
+     sends an explicit null. The truthy check at the render site already
+     handled it — only the type was wrong. */
+  reviewReason?: string | null;
 }
 
 /* Inline icons — no icon dependency, and they inherit `currentColor`

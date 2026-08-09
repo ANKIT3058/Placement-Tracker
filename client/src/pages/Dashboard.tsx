@@ -6,6 +6,7 @@ import EmptyState from "../components/EmptyState";
 import EventDetailsDrawer from "../components/EventDetailsDrawer";
 import ReviewCard from "../components/ReviewCard";
 import EmailInput from "../components/EmailInput";
+import type { Event } from "../types/event";
 
 /* Stable keys for the placeholder cards. Three fills a desktop row
    without pushing the fold down on mobile. */
@@ -42,16 +43,6 @@ function SearchIcon() {
   );
 }
 
-interface Event {
-  id: number;
-  company: string;
-  stage: string;
-  date: string;
-  venue: string | null;
-  confidence: number;
-  status: string;
-  reviewReason?: string;
-}
 
 export default function Dashboard() {
   const [events, setEvents] = useState<Event[]>([]);
