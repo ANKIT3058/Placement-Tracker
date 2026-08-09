@@ -9,9 +9,54 @@ type ExtractedData = {
 };
 
 // ---------------- CLEAN ----------------
+
+// Where the message being read stops and the thread it replies to begins.
+//
+// A reply carries the full history below it, and that history is full of real,
+// well-formed dates belonging to OTHER events. Both extractors read the whole
+// body, so those dates are indistinguishable from the current one: a Bajaj Auto
+// reply whose only explicit year lived in its quoted header
+// ("On Tue, Jul 29, 2025 at 2:30 PM ... wrote:") produced an Interview event on
+// 2025-07-29, a date that appears nowhere in the message anyone actually sent.
+//
+// The alternatives, in order:
+//   1. Gmail / Apple Mail attribution. `[\s\S]{0,300}?` spans newlines because
+//      the line wraps in practice — the real Bajaj body broke immediately
+//      before "wrote:", so a single-line `^On .* wrote:$` misses it. Lazy and
+//      bounded so it cannot run away across an entire body.
+//   2. Gmail forward separator ("---------- Forwarded message ---------").
+//   3. Outlook original-message separator ("-----Original Message-----").
+//   4. Outlook header block: a "From:" line followed shortly by "Sent:"/"Date:".
+//      Requiring the second line keeps a prose "From:" from cutting the body.
+//   5. Any quoted line, and the RFC 3676 signature delimiter ("-- ").
+//
+// This must run BEFORE the newline collapse below: every alternative is
+// line-anchored, and flattening newlines destroys the structure it needs.
+const QUOTE_BOUNDARY = new RegExp(
+  [
+    String.raw`^On\s[\s\S]{0,300}?\bwrote:`,
+    String.raw`^\s*-{2,}\s*Forwarded message`,
+    String.raw`^\s*-{2,}\s*Original Message\s*-{2,}`,
+    String.raw`^From:[^\n]*\n(?:[^\n]*\n){0,3}?\s*(?:Sent|Date):`,
+    String.raw`^>`,
+    String.raw`^--\s*$`,
+  ].join("|"),
+  "mi",
+);
+
 export const cleanEmail = (text: string): string => {
   if (!text) return "";
-  return text.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+
+  const boundary = text.search(QUOTE_BOUNDARY);
+
+  // Falling back to the full text when the cut leaves nothing is deliberate.
+  // A bare forward — no covering note, quoted history only — would otherwise
+  // clean to "" and lose an event the pipeline extracts correctly today. The
+  // old behaviour is the safe floor: never return less than nothing useful.
+  const head = boundary === -1 ? text : text.slice(0, boundary);
+  const body = head.trim().length > 0 ? head : text;
+
+  return body.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 };
 
 // ---------------- DATE ----------------
