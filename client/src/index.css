@@ -283,7 +283,9 @@ code {
   gap: var(--space-4);
 }
 
-/* ── Card ─────────────────────────────────────────────── */
+/* ── Card: shared shell ───────────────────────────────────
+   Base surface for EventCard and ReviewCard. Component-specific
+   rules live in their own blocks below and must not leak in here. */
 
 .card {
   background: var(--bg);
@@ -302,117 +304,315 @@ code {
   cursor: pointer;
 }
 
-.card-header {
+/* ── Event card ───────────────────────────────────────────
+   Three regions, top to bottom:
+     header  — company name + stage badge
+     body    — date/time and venue details
+     footer  — extraction confidence + status
+   Tone (colour) is passed down through --tone / --tone-bg /
+   --tone-border, so a badge, meter or chip only has to declare
+   which tone it is, never how that tone is painted. */
+
+/* ── Event card: shell ────────────────────────────────── */
+
+.event-card {
+  padding: var(--space-4);
+  gap: var(--space-3);
+  border-radius: 12px;
+  transition:
+    box-shadow 0.18s ease,
+    transform 0.18s ease,
+    border-color 0.18s ease;
+}
+
+/* Elevation on hover only where hover is real (not on touch, where a
+   :hover state sticks after a tap). :focus-within mirrors it so the
+   card still responds if it ever gains focusable content. */
+@media (hover: hover) {
+  .event-card:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent-border);
+    box-shadow:
+      0 6px 16px rgba(0, 0, 0, 0.09),
+      0 2px 4px rgba(0, 0, 0, 0.05);
+    /* The card is read-only — don't promise a click target. */
+    cursor: default;
+  }
+}
+
+.event-card:focus-within {
+  transform: translateY(-2px);
+  border-color: var(--accent-border);
+  box-shadow:
+    0 6px 16px rgba(0, 0, 0, 0.09),
+    0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .event-card {
+    transition: box-shadow 0.18s ease;
+  }
+  .event-card:hover,
+  .event-card:focus-within {
+    transform: none;
+  }
+}
+
+/* ── Event card: header ───────────────────────────────── */
+
+.event-card__header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
-.card-company {
-  font-size: 16px;
+.event-card__company {
+  font-size: 17px;
   font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: -0.2px;
   color: var(--text-h);
   margin: 0;
-  line-height: 1.3;
+  /* Long or unspaced company names wrap instead of widening the grid cell. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
+/* ── Event card: stage badge ──────────────────────────── */
 
-.card-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--text);
-  margin: 0;
-}
-
-.card-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-  gap: 8px;
-}
-
-.card-status {
-  font-size: 11px;
-  text-transform: capitalize;
-  color: var(--text);
-  opacity: 0.6;
-}
-
-/* ── Stage badges ─────────────────────────────────────── */
-
-.badge {
+.event-badge {
+  flex-shrink: 0;
+  /* Optically aligns the badge with the company name's cap height. */
+  margin-top: 2px;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  padding: 3px 7px;
-  border-radius: 99px;
-  flex-shrink: 0;
+  letter-spacing: 0.7px;
   line-height: 1.6;
-  border: 1px solid transparent;
+  padding: 3px 8px;
+  /* Squared-off, unlike the pills in the footer: reads as a label. */
+  border-radius: 6px;
+  white-space: nowrap;
+  background: var(--tone-bg);
+  color: var(--tone);
+  border: 1px solid var(--tone-border);
 }
 
 .badge-oa {
-  background: var(--blue-bg);
-  color: var(--blue);
-  border-color: var(--blue-border);
+  --tone: var(--blue);
+  --tone-bg: var(--blue-bg);
+  --tone-border: var(--blue-border);
 }
 
 .badge-interview {
-  background: var(--accent-bg);
-  color: var(--accent);
-  border-color: var(--accent-border);
+  --tone: var(--accent);
+  --tone-bg: var(--accent-bg);
+  --tone-border: var(--accent-border);
 }
 
 .badge-ppt {
-  background: var(--green-bg);
-  color: var(--green);
-  border-color: var(--green-border);
+  --tone: var(--green);
+  --tone-bg: var(--green-bg);
+  --tone-border: var(--green-border);
 }
 
 .badge-default {
-  background: var(--code-bg);
-  color: var(--text);
-  border-color: var(--border);
+  --tone: var(--text);
+  --tone-bg: var(--code-bg);
+  --tone-border: var(--border);
 }
 
-/* ── Confidence pill ──────────────────────────────────── */
+/* ── Event card: body details ─────────────────────────── */
 
-.confidence-pill {
+.event-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.event-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.event-detail__icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  /* Centres the icon against the first line of text. */
+  margin-top: 2px;
+  color: var(--text);
+  opacity: 0.7;
+}
+
+.event-detail__icon--sm {
+  width: 12px;
+  height: 12px;
+  margin-top: 0;
+}
+
+.event-detail__content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.event-detail__primary {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+.event-detail__secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text);
+}
+
+/* Missing data reads as absent, not as a real value. */
+.event-detail__placeholder {
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.4;
+  color: var(--text);
+  opacity: 0.75;
+}
+
+/* ── Event card: footer ───────────────────────────────── */
+
+.event-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  /* Pins the footer to the bottom so footers line up across a grid row. */
+  margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Event card: confidence ───────────────────────────── */
+
+.event-confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
   font-size: 11px;
   font-weight: 600;
-  padding: 3px 8px;
+  color: var(--tone);
+}
+
+.event-confidence__meter {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 4px;
   border-radius: 99px;
-  border: 1px solid transparent;
-  line-height: 1.5;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.event-confidence__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tone);
+}
+
+.event-confidence__text {
+  white-space: nowrap;
 }
 
 .conf-high {
-  background: var(--green-bg);
-  color: var(--green);
-  border-color: var(--green-border);
+  --tone: var(--green);
+  --tone-bg: var(--green-bg);
+  --tone-border: var(--green-border);
 }
 
 .conf-medium {
-  background: var(--amber-bg);
-  color: var(--amber);
-  border-color: var(--amber-border);
+  --tone: var(--amber);
+  --tone-bg: var(--amber-bg);
+  --tone-border: var(--amber-border);
 }
 
 .conf-low {
-  background: var(--red-bg);
-  color: var(--red);
-  border-color: var(--red-border);
+  --tone: var(--red);
+  --tone-bg: var(--red-bg);
+  --tone-border: var(--red-border);
+}
+
+/* ── Event card: status chip ──────────────────────────── */
+
+.event-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+  white-space: nowrap;
+  background: var(--tone-bg);
+  color: var(--tone);
+  border: 1px solid var(--tone-border);
+}
+
+.event-status__dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-confirmed {
+  --tone: var(--green);
+  --tone-bg: var(--green-bg);
+  --tone-border: var(--green-border);
+}
+
+.status-scheduled {
+  --tone: var(--blue);
+  --tone-bg: var(--blue-bg);
+  --tone-border: var(--blue-border);
+}
+
+.status-review {
+  --tone: var(--amber);
+  --tone-bg: var(--amber-bg);
+  --tone-border: var(--amber-border);
+}
+
+.status-default {
+  --tone: var(--text);
+  --tone-bg: var(--code-bg);
+  --tone-border: var(--border);
+}
+
+/* ── Event card: responsive ───────────────────────────── */
+/* The grid already reflows to one column, so only type sizing and
+   footer wrapping need attention at the small end. */
+
+@media (max-width: 640px) {
+  .event-card__company {
+    font-size: 16px;
+  }
+
+  .event-card__footer {
+    row-gap: var(--space-2);
+  }
 }
 
 /* ── Review card ──────────────────────────────────────── */
