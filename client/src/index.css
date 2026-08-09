@@ -615,44 +615,122 @@ code {
   }
 }
 
-/* ── Review card ──────────────────────────────────────── */
+/* ── Review card ──────────────────────────────────────────
+   Reads top to bottom as: why it needs review (header + reason),
+   what to fix (fields), how to resolve it (action).
+   Everything is scoped to the review card; the shared .card shell,
+   .btn base and .spinner are deliberately left alone. */
+
+/* ── Review card: shell ───────────────────────────────── */
 
 .card-review {
-  border-left: 3px solid var(--amber);
+  /* Wider than the old 3px so the amber edge survives at a glance
+     next to a grid of event cards. */
+  border-left: 4px solid var(--amber);
+  padding: var(--space-4);
+  gap: var(--space-3);
 }
+
+/* This card is a form, not a link — undo the shared .card hover cursor. */
+.card-review:hover {
+  cursor: default;
+}
+
+/* ── Review card: header ──────────────────────────────── */
 
 .review-header {
   display: flex;
-  flex-direction: column;
-  gap: 5px;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
-.review-label {
+.review-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px 3px 7px;
+  border-radius: 99px;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.6px;
+  white-space: nowrap;
+  background: var(--amber-bg);
   color: var(--amber);
+  border: 1px solid var(--amber-border);
 }
 
-.review-reason {
-  font-size: 13px;
-  color: var(--text);
-  margin: 0;
-  line-height: 1.5;
-  font-style: italic;
+.review-badge__icon {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
 }
+
+/* ── Review card: confidence ──────────────────────────────
+   Mirrors the event card's meter using the same --tone tokens
+   (.conf-high / .conf-medium / .conf-low). Worth extracting into
+   one shared .confidence-meter block once a third consumer exists. */
+
+.review-confidence {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tone);
+}
+
+.review-confidence__meter {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 4px;
+  border-radius: 99px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.review-confidence__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--tone);
+}
+
+.review-confidence__text {
+  white-space: nowrap;
+}
+
+/* ── Review card: reason callout ──────────────────────── */
+
+/* Promoted from dim italic body text to a tinted callout: this is the
+   one thing the reviewer has to read before touching the fields. */
+.review-reason {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 8px;
+  border-left: 2px solid var(--amber-border);
+  background: var(--amber-bg);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+/* ── Review card: fields ──────────────────────────────── */
 
 .review-fields {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .field-label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
@@ -662,19 +740,63 @@ code {
 
 .field-input {
   font: inherit;
-  font-size: 14px;
-  padding: 7px 10px;
+  /* 16px avoids iOS Safari's zoom-on-focus for form fields. */
+  font-size: 16px;
+  padding: 9px 11px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--bg);
   color: var(--text-h);
   outline: none;
+  width: 100%;
+  box-sizing: border-box;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .field-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.field-input:disabled {
+  background: var(--code-bg);
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* ── Review card: actions ─────────────────────────────── */
+
+.review-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  /* Pins the action to the bottom so buttons line up across a grid row. */
+  margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.review-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--text);
+  opacity: 0.75;
+}
+
+/* ── Review card: responsive ──────────────────────────── */
+/* The grid already collapses to one column; only the header row and
+   the hint need attention once the card is full-bleed. */
+
+@media (max-width: 640px) {
+  .review-header {
+    row-gap: var(--space-1);
+  }
+
+  .review-hint {
+    text-align: left;
+  }
 }
 
 /* ── Buttons ──────────────────────────────────────────── */
@@ -709,12 +831,53 @@ code {
   color: #fff;
 }
 
+/* Primary action of the review card. Scoped overrides only — the .btn
+   base above is shared with the email form and stays as-is. */
 .btn-confirm {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  /* Taller than the base button: comfortably above the 44px touch target. */
+  padding: 11px 14px;
   background: var(--green);
   color: #fff;
-  width: 100%;
-  padding: 9px;
   text-align: center;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.btn-confirm:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.btn-confirm:disabled {
+  box-shadow: none;
+}
+
+.btn-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+}
+
+/* In-button progress indicator. Separate from the page-level .spinner,
+   which is sized and coloured for the dashboard loading state. */
+.btn-spinner {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-spinner {
+    animation-duration: 1.6s;
+  }
 }
 
 /* ── Email input section ──────────────────────────────── */
