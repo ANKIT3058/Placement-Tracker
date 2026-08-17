@@ -18,6 +18,7 @@ import {
   markParsingFailed,
 } from "./attachment.repository.js";
 import { ATTACHMENT_STATUS } from "./attachment.types.js";
+import type { OwnershipContext } from "../auth/tenant-context.js";
 
 // An attachment loaded with its email + Gmail account (see getAttachmentById).
 type LoadedAttachment = NonNullable<
@@ -73,12 +74,19 @@ export class DocumentProcessingService {
       return;
     }
 
+    // The authoritative owner of this unit of work, derived from the persisted
+    // row rather than from the job payload (RFC-001 §9.5). The queue carries an
+    // id and nothing else, so this is the only place ownership can come from —
+    // and every write below is scoped by it.
+    const owner: OwnershipContext = { userId: attachment.userId };
+
     const messageId = attachment.email.gmailMessageId;
 
     if (!messageId) {
       // Without the originating Gmail message id there is nothing to fetch; this
       // is not retryable, so fail permanently rather than throwing forever.
       await markAttachmentFailed(
+        owner,
         attachmentId,
         "Originating email has no gmailMessageId",
       );
@@ -94,13 +102,14 @@ export class DocumentProcessingService {
       // The email predates account tracking (or the account was disconnected);
       // not retryable.
       await markAttachmentFailed(
+        owner,
         attachmentId,
         "Originating email has no associated Gmail account",
       );
       return;
     }
 
-    await markAttachmentProcessing(attachmentId);
+    await markAttachmentProcessing(owner, attachmentId);
 
     let storagePath: string;
     try {
@@ -112,7 +121,7 @@ export class DocumentProcessingService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
 
-      await markAttachmentFailed(attachmentId, message);
+      await markAttachmentFailed(owner, attachmentId, message);
 
       // Rethrow so BullMQ records the failure and retries per the queue's
       // backoff policy. Download failures are retryable (e.g. transient Gmail
@@ -123,12 +132,12 @@ export class DocumentProcessingService {
     // Download succeeded — the attachment is completed regardless of whether
     // parsing follows or succeeds. Marking it here ensures a later parse failure
     // never flips the download status back to failed.
-    await markAttachmentCompleted(attachmentId, storagePath, new Date());
+    await markAttachmentCompleted(owner, attachmentId, storagePath, new Date());
 
     // Best-effort parsing. Unsupported formats have no parser and are skipped.
     const parser = this.selectParser(attachment.mimeType);
     if (parser) {
-      await this.parseAndPersist(attachmentId, storagePath, parser);
+      await this.parseAndPersist(owner, attachmentId, storagePath, parser);
     }
   }
 
@@ -162,6 +171,7 @@ export class DocumentProcessingService {
   // is NOT rethrown — parse errors are typically deterministic, so retrying the
   // whole job would only re-download the file without helping.
   private async parseAndPersist(
+    owner: OwnershipContext,
     attachmentId: number,
     storagePath: string,
     parser: AttachmentParser,
@@ -171,11 +181,11 @@ export class DocumentProcessingService {
       parsed = await parser.parse(storagePath);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      await markParsingFailed(attachmentId, message);
+      await markParsingFailed(owner, attachmentId, message);
       return;
     }
 
-    await updateParsedResult(attachmentId, parsed, new Date());
+    await updateParsedResult(owner, attachmentId, parsed, new Date());
   }
 }
 
