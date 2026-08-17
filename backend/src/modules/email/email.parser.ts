@@ -60,39 +60,58 @@ export const cleanEmail = (text: string): string => {
 };
 
 // ---------------- DATE ----------------
+const MONTHS: Record<string, number> = {
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
+};
+
+// Day + month name is the minimum shape of an exact-date mention (e.g. "16th
+// August 2025", "16 Aug"); the year is optional. A bare year or "month year"
+// never matches this pattern, so it can never be mistaken for an exact date.
+const EXACT_DATE_PATTERN =
+  /(\d{1,2})(st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(\d{4})?/gi;
+
+export type DateEvidence = { day: number; month: number; year: number | null };
+
+// Every day+month(+year) mention in the text, in source order. `extractExactDate`
+// uses only the first (its existing, unchanged behaviour); the AI-date evidence
+// validator needs all of them, since an email can legitimately mention more than
+// one date and the AI may have picked a later one.
+export const findDateEvidence = (text: string): DateEvidence[] => {
+  const evidence: DateEvidence[] = [];
+
+  for (const match of text.matchAll(EXACT_DATE_PATTERN)) {
+    const month = MONTHS[match[3]!.toLowerCase()];
+    if (month === undefined) continue;
+
+    evidence.push({
+      day: parseInt(match[1]!, 10),
+      month,
+      year: match[4] ? parseInt(match[4], 10) : null,
+    });
+  }
+
+  return evidence;
+};
+
 export const extractExactDate = (text: string): Date | null => {
-  // Capture optional 4-digit year after the month name (e.g. "16th August 2025")
-  const regex =
-    /(\d{1,2})(st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(\d{4})?/i;
-
-  const match = text.match(regex);
-  if (!match?.[1] || !match?.[3]) return null;
-
-  const day = parseInt(match[1], 10);
-  const monthStr = match[3].toLowerCase();
-
-  const months: Record<string, number> = {
-    jan: 0,
-    feb: 1,
-    mar: 2,
-    apr: 3,
-    may: 4,
-    jun: 5,
-    jul: 6,
-    aug: 7,
-    sep: 8,
-    oct: 9,
-    nov: 10,
-    dec: 11,
-  };
-
-  const month = months[monthStr];
-  if (month === undefined) return null;
+  const first = findDateEvidence(text)[0];
+  if (!first) return null;
 
   // Use explicit year from email if present; otherwise fall back to current year (no future-bump)
-  const year = match[4] ? parseInt(match[4], 10) : new Date().getUTCFullYear();
+  const year = first.year ?? new Date().getUTCFullYear();
 
-  return new Date(Date.UTC(year, month, day));
+  return new Date(Date.UTC(year, first.month, first.day));
 };
 
 export const extractRelativeDate = (text: string): Date | null => {

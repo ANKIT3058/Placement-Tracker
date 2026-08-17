@@ -4,6 +4,7 @@ import {
   mergeExtraction,
   getExtractionStatus,
   detectEstimatedTime,
+  validateAIDate,
 } from "./extraction.utils.js";
 import { computeConfidence } from "./confidence.utils.js";
 import { structuredCompletion, RetryPolicy } from "../ai/index.js";
@@ -34,7 +35,7 @@ export const getOpenAIClient = () => {
 interface AIExtraction {
   company?: string;
   stage?: string;
-  date?: string;
+  date?: string | null;
   time?: string | null;
   venue?: string | null;
 }
@@ -57,6 +58,11 @@ Rules:
 - Convert dates like "20th Aug" → "YYYY-MM-DD"
 - Use the explicit year from the email if present (e.g. "16th August 2025" → "2025-08-16")
 - Assume current year ONLY if no year is given
+- Only return a full date when the email provides sufficient evidence for the day and month.
+  - A standalone year (e.g. "in 2027") is not a date — return null.
+  - A month + year alone (e.g. "August 2027") is not a full date — return null.
+  - Never invent a missing day or month merely to produce YYYY-MM-DD.
+  - Return null when the date is incomplete or ambiguous.
 - Convert vague times:
   - "morning" → "10:00"
   - "afternoon" → "14:00"
@@ -72,7 +78,7 @@ Return STRICT JSON only:
 {
   "company": string,
   "stage": "OA" | "Interview" | "PPT" | "Registration",
-  "date": "YYYY-MM-DD",
+  "date": "YYYY-MM-DD" | null,
   "time": string | null,
   "venue": string | null
 }
@@ -101,6 +107,16 @@ export const extract = async (text: string) => {
 
   if (!aiData) {
     console.log("Using regex only (AI unavailable)");
+  }
+
+  if (aiData) {
+    // A full "YYYY-MM-DD" is only trustworthy when the source actually names
+    // that day and month; the AI can otherwise turn a standalone year or a
+    // month+year into a plausible-looking but fabricated date. An unsupported
+    // date is dropped here (not replaced) so `mergeExtraction` falls back to
+    // the deterministic date exactly as it already does for any other
+    // missing AI field.
+    aiData.date = validateAIDate(aiData.date, text);
   }
 
   regexData = extractData(text);
