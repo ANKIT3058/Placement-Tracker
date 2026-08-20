@@ -119,10 +119,24 @@ export const updateEventService = async (
       });
     }
 
-    // Update event
+    // Update event.
+    //
+    // Scoped by (id, userId) through the `@@unique([id, userId])` composite
+    // selector, so the tenant predicate is part of the statement that finds the
+    // row rather than a property of the caller that supplied the id.
+    //
+    // The write was already unreachable for a wrong owner — the history insert
+    // above references Event(id, userId) and fails first, taking the whole
+    // transaction with it. But that protection lives on another table and holds
+    // only while every automated Event write records history alongside it. The
+    // predicate belongs here, on the write it protects, before the first
+    // automated write that does not.
     return tx.event.update({
       where: {
-        id: eventId,
+        id_userId: {
+          id: eventId,
+          userId: owner.userId,
+        },
       },
       data: {
         ...updateData,

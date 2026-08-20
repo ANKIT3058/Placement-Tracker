@@ -139,9 +139,13 @@ describe("Confidence Logic", () => {
     // ASSERT 1: the event was updated inside the transaction
     expect(prisma.event.update).toHaveBeenCalled();
 
-    // ASSERT 2: correct data passed
+    // ASSERT 2: correct data passed, scoped to the owner.
+    //
+    // The selector carries the tenant predicate as of PR-4: the automated write
+    // resolves its row by (id, userId) through `@@unique([id, userId])`, so
+    // holding a correct Event id is not by itself enough to write to the row.
     expect(prisma.event.update).toHaveBeenCalledWith({
-      where: { id: existing.id },
+      where: { id_userId: { id: existing.id, userId: TENANT.userId } },
       data: expect.objectContaining({
         time: "15:00",
         confidence: 0.9,
