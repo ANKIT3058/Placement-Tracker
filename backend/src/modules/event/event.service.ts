@@ -3,7 +3,7 @@ import { createEvent } from "./event.repository.js";
 
 import { generateEventKey } from "./event.utils.js";
 import { toUTCDate, toISTKey } from "../../shared/utils/date.js";
-import type { CreateEventInput } from "./event.types.js";
+import type { CreateEventInput, ManualEventUpdate } from "./event.types.js";
 import type { OwnershipContext } from "../auth/tenant-context.js";
 
 // CREATE
@@ -230,10 +230,20 @@ export const getEventByIdService = async (
 // key available until AC-5.11 adds `@@unique([userId, eventKey])`. The window
 // between the two statements is not exploitable: ownership is immutable once
 // written, so it cannot change between the check and the write.
+// The update payload is built field by field from `ManualEventUpdate` rather
+// than spread from the caller's object. The spread was the mass-assignment
+// defect: every Event column is a legal Prisma input, so `{ ...data }` handed
+// the caller `userId`, `id`, `eventKey`, and the provenance timestamps along
+// with the two fields they were meant to edit.
+//
+// Constructing the payload explicitly makes that impossible by construction
+// rather than by filtering: a field that is not written here cannot be written
+// through this path, whatever an internal caller passes. The narrow parameter
+// type is the compile-time half of the same guarantee.
 export const updateEventManuallyService = async (
   owner: OwnershipContext,
   id: number,
-  data: any,
+  data: ManualEventUpdate,
 ) => {
   const existing = await prisma.event.findFirst({
     where: { id, userId: owner.userId },
@@ -247,7 +257,8 @@ export const updateEventManuallyService = async (
   return prisma.event.update({
     where: { id },
     data: {
-      ...data,
+      ...(data.company !== undefined && { company: data.company }),
+      ...(data.stage !== undefined && { stage: data.stage }),
       confidence: 1.0, // human override
       status: "confirmed", // review → confirmed
       reviewReason: null,

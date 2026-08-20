@@ -1,5 +1,27 @@
 import type { VenueMeta } from "../email/email.parser.js";
 
+// THE MANUAL REVIEW CONTRACT.
+//
+// The two fields the review UI lets a human correct (`ReviewCard.tsx`), and the
+// only two `PATCH /event/:id` accepts. Everything else about an Event belongs to
+// the server: ownership, identity, provenance timestamps, and the confirmation
+// semantics themselves.
+//
+// Declared as its own type rather than `Partial<Event>` so that the accepted
+// surface is a deliberate statement here, not a shadow of the schema. Under
+// `Partial<Event>` every column added to the model would silently become
+// client-writable — which is exactly how `userId` became writable.
+export interface ManualEventUpdate {
+  company?: string;
+  stage?: string;
+}
+
+// The runtime half of the same statement, kept beside the type so the two
+// cannot drift. Validation is an allowlist rather than a denylist of known-bad
+// fields: a denylist protects only the fields someone thought to name, and
+// leaves every future column exposed by default.
+export const MANUAL_EVENT_UPDATE_FIELDS = ["company", "stage"] as const;
+
 export interface CreateEventInput {
   company: string;
   stage: string;
