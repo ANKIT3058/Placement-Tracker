@@ -1,3 +1,5 @@
+import { requestJson } from "./http";
+
 const BASE_URL = import.meta.env.VITE_API_URL;
 
 /* The manual page collects a single textarea of raw email text, but POST /email
@@ -12,8 +14,16 @@ const BASE_URL = import.meta.env.VITE_API_URL;
 const MANUAL_SUBJECT = "Manual paste";
 const MANUAL_SENDER = "manual@placement-tracker.local";
 
+/* The 202 body the route answers with. Named so the caller's
+   `result.success === false` check stays type-checked now that the shared
+   helper returns a typed value rather than `any`. */
+type ProcessEmailResult = {
+  success: boolean;
+  message: string;
+};
+
 export const processEmail = async (text: string) => {
-  const res = await fetch(`${BASE_URL}/email`, {
+  return requestJson<ProcessEmailResult>(`${BASE_URL}/email`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -24,6 +34,4 @@ export const processEmail = async (text: string) => {
       sender: MANUAL_SENDER,
     }),
   });
-
-  return res.json();
 };

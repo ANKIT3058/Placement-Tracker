@@ -39,11 +39,16 @@ export default function EmptyState({
   title,
   description,
   tone = "default",
+  action,
 }: {
   icon: keyof typeof ICONS;
   title: string;
   description?: string;
   tone?: "default" | "positive";
+  /* Optional call to action rendered under the description — the
+     signed-out state needs a sign-in link, and every other caller keeps
+     working unchanged because it is optional. */
+  action?: React.ReactNode;
 }) {
   return (
     <div
@@ -54,6 +59,7 @@ export default function EmptyState({
       </span>
       <p className="empty-state__title">{title}</p>
       {description && <p className="empty-state__description">{description}</p>}
+      {action}
     </div>
   );
 }

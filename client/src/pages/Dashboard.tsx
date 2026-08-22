@@ -25,6 +25,20 @@ const STAGE_FILTERS: { id: string; label: string; pattern: RegExp | null }[] = [
   { id: "ppt", label: "PPT", pattern: /\bppt\b|\bpre[-\s]?placement talk\b/i },
 ];
 
+/* Where signing in begins. OAuth is a top-level browser navigation — the
+   backend answers /gmail/auth with a 302 to Google — so this is an anchor
+   the browser follows, never a fetch. The base path is read from the
+   environment exactly as the API modules read it. */
+const SIGN_IN_URL = `${import.meta.env.VITE_API_URL}/gmail/auth`;
+
+/* 401 is the only failure that means "sign in". Every other failure —
+   500, a network drop — is ours, and offering a sign-in link for it would
+   send the user round a loop that cannot fix anything. */
+const isAuthenticationRequired = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  (error as { status?: unknown }).status === 401;
+
 function SearchIcon() {
   return (
     <svg
@@ -50,12 +64,22 @@ export default function Dashboard() {
   const [search, setSearch] = useState("");
   const [stageId, setStageId] = useState("all");
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const data: Event[] = await getEvents();
       setEvents(Array.isArray(data) ? data : []);
+      setError(null);
+    } catch (err) {
+      /* Required, not defensive: `getEvents` rejects on any non-2xx
+         response, and this function's result is not awaited by the
+         effect that calls it — without a catch a failed load would be an
+         unhandled rejection and the UI would silently keep the previous
+         (or empty) list. */
+      setError(err);
+      setEvents([]);
     } finally {
       setLoading(false);
     }
@@ -144,6 +168,31 @@ export default function Dashboard() {
                   <EventCardSkeleton key={key} />
                 ))}
               </div>
+            </section>
+          ) : error ? (
+            /* A failed load is not an empty account. Rendering the usual
+               sections here would show "No events yet" to someone whose
+               request never succeeded — which, for a signed-out user, is
+               the app confidently reporting something it does not know. */
+            <section className="section">
+              {isAuthenticationRequired(error) ? (
+                <EmptyState
+                  icon="calendar"
+                  title="Sign in to see your events"
+                  description="Placement Tracker reads placement announcements from your college inbox. Sign in with the Google account that receives them."
+                  action={
+                    <a className="btn btn-confirm" href={SIGN_IN_URL}>
+                      Sign in with Google
+                    </a>
+                  }
+                />
+              ) : (
+                <EmptyState
+                  icon="calendar"
+                  title="Couldn't load your events"
+                  description="Something went wrong on our side. Try again in a moment."
+                />
+              )}
             </section>
           ) : (
             <>

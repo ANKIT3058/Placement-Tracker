@@ -82,13 +82,19 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
     // carries its cookie back.
     await establishSession(req, user);
 
-    // Response shape unchanged. Nothing about the User is exposed: `publicId`
-    // is the only identifier that may ever leave the backend (RFC-001 §8.2),
-    // and no consumer has asked for it yet.
-    return res.json({
-      success: true,
-      email,
-    });
+    // Google sent the BROWSER here as a top-level navigation, so whatever this
+    // returns is what the person sees. A JSON body left them looking at
+    // `{"success":true}` on the API origin with no way back into the app; a
+    // redirect returns them to it.
+    //
+    // After `establishSession`, never before: the redirect and the Set-Cookie
+    // ride on the same response, so the browser cannot arrive at the frontend
+    // ahead of the session that makes it useful.
+    //
+    // Nothing about the User is exposed — `publicId` remains the only
+    // identifier that may ever leave the backend (RFC-001 §8.2), and a redirect
+    // carries none of it.
+    return res.redirect(process.env.FRONTEND_URL ?? "/");
   } catch (error) {
     if (
       error instanceof UnverifiedGoogleIdentityError ||
