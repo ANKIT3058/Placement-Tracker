@@ -57,12 +57,14 @@ export default function ReviewCard({
   const handleConfirm = async () => {
     setSaving(true);
     try {
-      await updateEvent(event.id, {
-        company,
-        stage,
-        confidence: 1.0,
-        status: "confirmed",
-      });
+      /* Only the two fields the reviewer actually edits. Confirming an
+         Event also sets confidence to 1.0, status to "confirmed" and
+         clears reviewReason — but the server does that itself on this
+         request, and its allowlist rejects a payload that so much as
+         names those fields. Sending them was always redundant; since
+         they became a 400, it was also the reason Confirm & Save
+         silently stopped working. */
+      await updateEvent(event.id, { company, stage });
       refresh();
     } finally {
       setSaving(false);

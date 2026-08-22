@@ -36,3 +36,21 @@ export interface Event {
   createdAt: string;
   updatedAt: string;
 }
+
+/* What a reviewer may change through PATCH /event/:id.
+
+   This mirrors the backend's allowlist (`MANUAL_EVENT_UPDATE_FIELDS` in
+   event.types.ts) field for field, and deliberately not `Partial<Event>`:
+   under that type every column reads as editable, which is how a payload
+   carrying `confidence` and `status` survived here unnoticed until the
+   backend started rejecting it.
+
+   Confirmation semantics — confidence, status, reviewReason — belong to
+   the server. It sets them itself on this same request, so a client has
+   nothing to say about them and the endpoint refuses a request that
+   names them at all. Both fields are optional because the endpoint
+   accepts a partial edit; it requires only that at least one is present. */
+export type ManualEventUpdate = {
+  company?: string;
+  stage?: string;
+};

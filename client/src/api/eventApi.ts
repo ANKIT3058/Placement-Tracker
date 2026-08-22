@@ -1,4 +1,4 @@
-import type { Event } from "../types/event";
+import type { Event, ManualEventUpdate } from "../types/event";
 
 const BASE_URL = import.meta.env.VITE_API_URL;
 
@@ -7,7 +7,7 @@ export const getEvents = async (): Promise<Event[]> => {
   return res.json();
 };
 
-export const updateEvent = async (id: number, data: Partial<Event>) => {
+export const updateEvent = async (id: number, data: ManualEventUpdate) => {
   const res = await fetch(`${BASE_URL}/event/${id}`, {
     method: "PATCH",
     headers: {
