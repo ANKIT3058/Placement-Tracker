@@ -23,6 +23,14 @@ export interface Event {
   venue: string | null;
   confidence: number;
   status: string;
+
+  /* Where this event sits relative to now, decided by the backend from
+     date, time and isTimeEstimated against an authoritative clock in
+     IST. Required, not optional: every event the API returns carries it,
+     and making it optional would invite a caller to fall back to reading
+     the date — which is the timezone-dependent guess the server-side
+     derivation exists to replace. */
+  temporalStatus: "upcoming" | "expired";
   reviewReason: string | null;
 
   createdAt: string;

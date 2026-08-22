@@ -65,11 +65,33 @@ export default function Dashboard() {
     fetchData();
   }, [fetchData]);
 
-  const upcomingEvents = events
+  const reviewEvents = events.filter((e) => e.status === "review");
+
+  /* Review is a lifecycle state with its own section, so it is taken out
+     first; the temporal split applies only to what remains. An event
+     awaiting review is not "upcoming" or "expired" as far as this page is
+     concerned — it is waiting for a person. */
+  const datedEvents = events
     .filter((e) => e.status !== "review")
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-  const reviewEvents = events.filter((e) => e.status === "review");
+  /* Temporal placement comes from the backend and nowhere else. The server
+     derives temporalStatus from date, time and isTimeEstimated against an
+     authoritative clock in IST; re-deriving it here would give the viewer's
+     timezone a vote in a decision already made, and would disagree with it
+     for anyone outside IST.
+
+     Only "expired" is matched positively. An unrecognised value — a newer
+     backend, a partial deploy — falls through to Upcoming rather than
+     vanishing from both sections, matching how STATUS_TONE and STAGE_BADGE
+     already treat unknown values from the API. Showing an event that has
+     passed is a much smaller failure than silently dropping one. */
+  const expiredEvents = datedEvents.filter(
+    (e) => e.temporalStatus === "expired",
+  );
+  const upcomingEvents = datedEvents.filter(
+    (e) => e.temporalStatus !== "expired",
+  );
 
   /* Derived, not stored: the filter is a view of upcomingEvents, so it
      can never drift out of sync with the fetched data. Search and stage
@@ -229,6 +251,37 @@ export default function Dashboard() {
                   <div className="cards-grid">
                     {reviewEvents.map((e) => (
                       <ReviewCard key={e.id} event={e} refresh={fetchData} />
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* Last, because it is the least actionable of the three: what
+                  has already happened, kept for reference. Placing it here
+                  also leaves Upcoming and Needs Review exactly where they
+                  were. The search and stage filters stay scoped to Upcoming —
+                  they narrow what you are deciding about, not what you are
+                  looking back at. */}
+              <section className="section">
+                <div className="section-header">
+                  <h2>Expired Events</h2>
+                  <span className="section-count">{expiredEvents.length}</span>
+                </div>
+
+                {expiredEvents.length === 0 ? (
+                  <EmptyState
+                    icon="calendar"
+                    title="Nothing has expired"
+                    description="Events move here once their scheduled date has passed."
+                  />
+                ) : (
+                  <div className="cards-grid">
+                    {expiredEvents.map((e) => (
+                      <EventCard
+                        key={e.id}
+                        event={e}
+                        onSelect={() => setSelectedEvent(e)}
+                      />
                     ))}
                   </div>
                 )}
