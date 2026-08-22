@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { updateEvent } from "../api/eventApi";
+import { ApiError } from "../api/http";
 
 interface ReviewEvent {
   id: number;
@@ -43,6 +44,49 @@ function CheckIcon() {
   );
 }
 
+/* What to tell the reviewer when a confirmation is refused.
+ *
+ * The 400 case is the one that carries real information: the Event PATCH
+ * allowlist answers with a message naming exactly which fields were refused and
+ * which are editable, and nothing here could reconstruct that from the status
+ * alone. It is shown verbatim — paraphrasing it would discard the field names,
+ * which are the only part anyone can act on.
+ *
+ * 401, 500 and connectivity get wording rather than the raw message, matching
+ * EmailInput: those defaults ("Request failed with status 500") describe the
+ * transport, not the problem. Wording is kept in step with EmailInput by hand;
+ * a third consumer of this shape would be the point at which extracting it
+ * earns its keep. */
+const messageForError = (error: unknown): string => {
+  const status =
+    typeof error === "object" && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+
+  if (typeof status !== "number") {
+    return "Could not reach the server. Check your connection and try again.";
+  }
+
+  if (status === 401) {
+    return "Your session has expired. Please sign in again.";
+  }
+
+  if (status === 400) {
+    /* Only a message the SERVER wrote is worth showing. `ApiError` fills in
+       "Request failed with status 400" when the body carried none, which
+       describes the transport rather than the problem — compared against the
+       class's own default so this stays correct if that wording changes. */
+    const hasServerMessage =
+      error instanceof ApiError && error.message !== new ApiError(400).message;
+
+    return hasServerMessage
+      ? (error as ApiError).message
+      : "That change could not be saved. Check the fields and try again.";
+  }
+
+  return "The server could not save your changes. Please try again.";
+};
+
 export default function ReviewCard({
   event,
   refresh,
@@ -53,9 +97,13 @@ export default function ReviewCard({
   const [company, setCompany] = useState(event.company);
   const [stage, setStage] = useState(event.stage);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleConfirm = async () => {
     setSaving(true);
+    /* Cleared per attempt, so a stale failure never sits alongside a fresh
+       retry. */
+    setError(null);
     try {
       /* Only the two fields the reviewer actually edits. Confirming an
          Event also sets confidence to 1.0, status to "confirmed" and
@@ -66,6 +114,15 @@ export default function ReviewCard({
          silently stopped working. */
       await updateEvent(event.id, { company, stage });
       refresh();
+    } catch (err) {
+      /* Required, not defensive: updateEvent rejects on any non-2xx since
+         PR-7B, and onClick does not await this handler — without a catch a
+         refused save was an unhandled rejection that told the reviewer
+         nothing. The refresh is deliberately skipped: re-fetching unchanged
+         data would re-render the same card and read as a save that silently
+         did nothing. The reviewer's edits stay in local state so the retry
+         costs them nothing. */
+      setError(messageForError(err));
     } finally {
       setSaving(false);
     }
@@ -153,6 +210,16 @@ export default function ReviewCard({
           Confirming moves this event to Upcoming Events.
         </p>
       </div>
+
+      {/* `role="alert"` so a refused save is announced rather than only drawn —
+          the reviewer's attention is on the fields they just corrected, not on
+          the bottom of the card. Reuses the error styling EmailInput already
+          uses for the same purpose. */}
+      {error && (
+        <p className="email-message email-message--error" role="alert">
+          {error}
+        </p>
+      )}
     </article>
   );
 }

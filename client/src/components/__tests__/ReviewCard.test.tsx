@@ -22,6 +22,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 import ReviewCard from "../ReviewCard";
 import { updateEvent } from "../../api/eventApi";
+import { ApiError } from "../../api/http";
 
 vi.mock("../../api/eventApi", () => ({
   getEvents: vi.fn(),
@@ -123,5 +124,127 @@ describe("the existing review behaviour is preserved", () => {
     expect(
       screen.getByText("Low confidence: missing venue"),
     ).toBeInTheDocument();
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * PR-7D — a failed confirmation must be visible.
+ *
+ * `handleConfirm` has try/finally and no catch. Since PR-7B made `updateEvent`
+ * reject on any non-2xx, a failure is now an unhandled promise rejection: the
+ * spinner stops, the card stays, `refresh()` never runs, and the reviewer is
+ * told nothing at all. They cannot tell a refused save from a successful one
+ * that changed nothing.
+ *
+ * The 400 case carries the most weight. PR-3's allowlist answers with a message
+ * naming exactly which fields were refused and which are editable — the single
+ * most useful sentence the backend produces — and it is currently thrown away
+ * twice over: once by `requestJson` not reading the body, once by ReviewCard
+ * not catching.
+ *
+ * Wording is pinned only where the server authored it. For 401/500/network the
+ * tests assert the CATEGORY, so GREEN chooses the copy.
+ * ------------------------------------------------------------------ */
+
+const SIGN_IN_WORDING = /sign in|signed out|session|log in|authenticat/i;
+const CONNECTIVITY_WORDING = /reach the server|connection|offline|network/i;
+
+const ALLOWLIST_MESSAGE =
+  "Unsupported field(s): confidence, status. Only company, stage can be edited.";
+
+/* Renders, confirms against a given rejection, and returns what the reviewer
+   is shown. */
+const failWith = async (rejection: unknown): Promise<string> => {
+  vi.mocked(updateEvent).mockRejectedValue(rejection);
+
+  render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+  await confirm();
+
+  const alert = await screen.findByRole("alert");
+  return alert.textContent ?? "";
+};
+
+describe("a refused save is reported to the reviewer", () => {
+  it("shows the server's explanation for a rejected request", async () => {
+    const message = await failWith(new ApiError(400, ALLOWLIST_MESSAGE));
+
+    // Verbatim: a paraphrase would lose the field names, which are the only
+    // part a reviewer (or the next developer) can act on.
+    expect(message).toContain(ALLOWLIST_MESSAGE);
+  });
+
+  it("reports an expired session as an authentication problem", async () => {
+    const message = await failWith(new ApiError(401));
+
+    expect(message).toMatch(SIGN_IN_WORDING);
+    expect(message).not.toMatch(CONNECTIVITY_WORDING);
+  });
+
+  it("reports a server failure without blaming the session", async () => {
+    const message = await failWith(new ApiError(500));
+
+    expect(message).not.toMatch(SIGN_IN_WORDING);
+    expect(message).not.toMatch(CONNECTIVITY_WORDING);
+  });
+
+  it("reports a network failure as a connectivity problem", async () => {
+    const message = await failWith(new TypeError("Failed to fetch"));
+
+    expect(message).toMatch(CONNECTIVITY_WORDING);
+    expect(message).not.toMatch(SIGN_IN_WORDING);
+  });
+});
+
+describe("a refused save leaves the card usable", () => {
+  it("stops the saving state", async () => {
+    vi.mocked(updateEvent).mockRejectedValue(new ApiError(500));
+
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+    await confirm();
+
+    // Back to "Confirm & Save", enabled — the reviewer can correct and retry.
+    const button = await screen.findByRole("button", {
+      name: /confirm & save/i,
+    });
+    expect(button).not.toBeDisabled();
+  });
+
+  it("keeps the reviewer's edits on screen", async () => {
+    vi.mocked(updateEvent).mockRejectedValue(new ApiError(500));
+
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText(/company/i), {
+      target: { value: "Amazon India" },
+    });
+    await confirm();
+
+    // Losing a correction because the save failed would make the failure worse
+    // than the bug.
+    await waitFor(() =>
+      expect(screen.getByLabelText(/company/i)).toHaveValue("Amazon India"),
+    );
+  });
+
+  it("does not refresh the queue", async () => {
+    const refresh = vi.fn();
+    vi.mocked(updateEvent).mockRejectedValue(new ApiError(500));
+
+    render(<ReviewCard event={reviewEvent} refresh={refresh} />);
+    await confirm();
+
+    // Refreshing would re-fetch unchanged data and re-render the same card,
+    // reading as a successful save that did nothing.
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeInTheDocument());
+    expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("a successful save reports no error", () => {
+  it("shows no alert", async () => {
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    await confirm();
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });

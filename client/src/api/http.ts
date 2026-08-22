@@ -20,6 +20,36 @@ export class ApiError extends Error {
   }
 }
 
+/* The server's explanation for a failure, when it sent one.
+
+   Every client-facing error in this backend answers with a `message` — and
+   `message` alone is read. Reaching for whatever other fields happen to be
+   present would turn the contract into "display any string the server sent",
+   which is a much larger promise than the one the backend makes.
+
+   Every failure to READ the body is swallowed. An error response may be empty,
+   plain text, or malformed JSON, and in each case the HTTP failure is still the
+   truth: a SyntaxError surfacing where a 500 belongs would be strictly worse
+   than having no message at all. Reading why a request failed must never be
+   able to replace the fact that it did. */
+const serverMessage = async (res: Response): Promise<string | undefined> => {
+  try {
+    const body: unknown = await res.json();
+
+    if (typeof body === "object" && body !== null) {
+      const message = (body as { message?: unknown }).message;
+
+      if (typeof message === "string" && message.trim() !== "") {
+        return message;
+      }
+    }
+  } catch {
+    // Unreadable body — the status is all we can report.
+  }
+
+  return undefined;
+};
+
 /* Performs the request and returns the parsed body, or throws.
 
    A network failure (no response at all) propagates untouched: `fetch` already
@@ -32,7 +62,7 @@ export const requestJson = async <T>(
   const res = await fetch(url, init);
 
   if (!res.ok) {
-    throw new ApiError(res.status);
+    throw new ApiError(res.status, await serverMessage(res));
   }
 
   return (await res.json()) as T;
