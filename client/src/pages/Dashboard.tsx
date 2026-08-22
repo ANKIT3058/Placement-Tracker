@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getEvents } from "../api/eventApi";
+import { logout } from "../api/authApi";
 import EventCard from "../components/EventCard";
 import EventCardSkeleton from "../components/EventCardSkeleton";
 import EmptyState from "../components/EmptyState";
@@ -39,6 +40,28 @@ const isAuthenticationRequired = (error: unknown): boolean =>
   error !== null &&
   (error as { status?: unknown }).status === 401;
 
+/* Why a failed logout could not be reported.
+ *
+ * Only two outcomes are reachable: the endpoint answers 200 for a caller with
+ * no session, and it is not behind requireAuth, so neither 401 nor 400 can
+ * occur. A status at all means the server answered and refused; its absence
+ * means it was never reached.
+ *
+ * Deliberately not folded into EmailInput's and ReviewCard's equivalents: those
+ * two differ from each other in how they treat a 400 (ReviewCard shows the
+ * server's message, EmailInput does not) and this one has no 400 branch at all.
+ * They are three similar-looking functions, not three copies of one. */
+const logoutErrorMessage = (error: unknown): string => {
+  const status =
+    typeof error === "object" && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+
+  return typeof status === "number"
+    ? "Could not log you out. Please try again."
+    : "Could not reach the server. Check your connection and try again.";
+};
+
 function SearchIcon() {
   return (
     <svg
@@ -65,6 +88,8 @@ export default function Dashboard() {
   const [stageId, setStageId] = useState("all");
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [error, setError] = useState<unknown>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -88,6 +113,32 @@ export default function Dashboard() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  /* Ending the session is the server's job; this only asks and then re-reads
+     the answer.
+
+     No optimistic signed-out state. If the request fails the session may still
+     be live, and a screen claiming otherwise is the most dangerous thing this
+     page could say — on a shared machine especially. So the UI changes only
+     after `fetchData` comes back 401, which is the same signal that drives
+     every other authentication decision here. */
+  const handleLogout = async () => {
+    if (loggingOut) {
+      return;
+    }
+
+    setLoggingOut(true);
+    setLogoutError(null);
+
+    try {
+      await logout();
+      await fetchData();
+    } catch (err) {
+      setLogoutError(logoutErrorMessage(err));
+    } finally {
+      setLoggingOut(false);
+    }
+  };
 
   const reviewEvents = events.filter((e) => e.status === "review");
 
@@ -147,6 +198,40 @@ export default function Dashboard() {
           <p className="dashboard-subtitle">
             AI-powered placement event extraction and tracking
           </p>
+
+          {/* Offered only once there is a session to end: hidden while the
+              first load is still deciding, and hidden in the signed-out state
+              where "Log out" beside "Sign in" would be nonsense.
+
+              A button, not a link — ending a session is a state-changing POST,
+              and a GET form of it would be CSRF-reachable under SameSite=Lax
+              (RFC-001 §11.4). Disabled in flight so a second click cannot
+              issue a second request. */}
+          {!loading && !isAuthenticationRequired(error) && (
+            <div className="dashboard-account">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleLogout}
+                disabled={loggingOut}
+                aria-busy={loggingOut}
+              >
+                {/* The label stays put while the request is in flight.
+                    EmailInput and ReviewCard swap theirs for "Processing…" /
+                    "Saving…", but those are the only control in their section;
+                    renaming this one mid-interaction changes its accessible
+                    name, which a screen reader announces as a different
+                    control. `disabled` + `aria-busy` carry the progress. */}
+                Log out
+              </button>
+
+              {logoutError && (
+                <p className="email-message email-message--error" role="alert">
+                  {logoutError}
+                </p>
+              )}
+            </div>
+          )}
         </header>
 
         <main className="dashboard-main">
