@@ -106,6 +106,7 @@ import request from "supertest";
 
 import app from "../../../app";
 import { prisma } from "../../../lib/prisma";
+import { csrfTokenOf, CSRF_HEADER } from "../../../__tests__/helpers/csrf";
 
 type Agent = ReturnType<typeof request.agent>;
 
@@ -128,6 +129,25 @@ const signIn = async (): Promise<Agent> => {
   return agent;
 };
 
+/* PR-8B. `POST /auth/logout` is behind `requireCsrf` — the one route where the
+   check stands alone, since logout deliberately has no `requireAuth`. A forced
+   logout is a real cross-site attack: a page that can end a session denies the
+   victim the application.
+
+   So every logout below is sent the way the frontend sends it, with the token
+   the browser was issued echoed back. Nothing here weakens the check; a request
+   without the token is refused, and that refusal is asserted in
+   `csrf.api.test.ts`. */
+const logout = async (agent: Agent) => {
+  // Read the token BEFORE building the request. Superagent attaches an agent
+  // jar cookies when the request object is created, not when it is sent, so
+  // inlining the await as an argument would build the POST while the jar was
+  // still empty and send it with no cookie at all.
+  const token = await csrfTokenOf(agent);
+
+  return agent.post("/auth/logout").set(CSRF_HEADER, token);
+};
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -145,7 +165,7 @@ describe("POST /auth/logout ends the session on the server", () => {
   test("logout answers 200", async () => {
     const browser = await signIn();
 
-    const res = await browser.post("/auth/logout");
+    const res = await logout(browser);
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ success: true });
@@ -155,7 +175,7 @@ describe("POST /auth/logout ends the session on the server", () => {
     const browser = await signIn();
 
     await browser.get("/event");
-    await browser.post("/auth/logout");
+    await logout(browser);
 
     const after = await browser.get("/event");
 
@@ -167,7 +187,7 @@ describe("POST /auth/logout ends the session on the server", () => {
   test("clears the session cookie with attributes that match how it was set", async () => {
     const browser = await signIn();
 
-    const res = await browser.post("/auth/logout");
+    const res = await logout(browser);
 
     // A browser ignores a clear whose attributes differ from the original
     // (RFC-001 §10.3), so the cookie would silently survive.
@@ -183,7 +203,10 @@ describe("logout is idempotent", () => {
     // The route is deliberately not behind `requireAuth`: "you are now logged
     // out" is true either way, and answering 401 would report whether the
     // presented cookie was valid.
-    const res = await request(app).post("/auth/logout");
+    // A browser with no session, but with the CSRF token any browser is
+    // issued on an ordinary read — which is exactly what a signed-out visitor
+    // holds when they click "log out".
+    const res = await logout(request.agent(app));
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ success: true });
@@ -192,8 +215,8 @@ describe("logout is idempotent", () => {
   test("logging out twice is safe", async () => {
     const browser = await signIn();
 
-    const first = await browser.post("/auth/logout");
-    const second = await browser.post("/auth/logout");
+    const first = await logout(browser);
+    const second = await logout(browser);
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
@@ -204,7 +227,7 @@ describe("logout ends the application session and nothing else", () => {
   test("the Gmail connection is left intact", async () => {
     const browser = await signIn();
 
-    await browser.post("/auth/logout");
+    await logout(browser);
 
     // Mailbox connections survive logout by design (RFC-001 §10.3): grant
     // revocation belongs to disconnection and account deletion, so a user who
@@ -216,7 +239,7 @@ describe("logout ends the application session and nothing else", () => {
 
   test("signing in again works after logging out", async () => {
     const first = await signIn();
-    await first.post("/auth/logout");
+    await logout(first);
 
     const second = await signIn();
     const res = await second.get("/event");

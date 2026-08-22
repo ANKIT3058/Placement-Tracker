@@ -6,6 +6,7 @@ import {
   updateEventController,
 } from "./event.controller.js";
 import { requireAuth } from "../auth/auth.middleware.js";
+import { requireCsrf } from "../auth/csrf.js";
 
 const router = Router();
 
@@ -18,9 +19,15 @@ const router = Router();
 // they land an authenticated user can still reach another user's Event.
 router.use(requireAuth);
 
-router.post("/", createEventController);
+// CSRF on the writes only, and AFTER `requireAuth` above (RFC-001 §11.4).
+//
+// Reads are exempt because they change nothing: a cross-site GET that a
+// forgery can cause still returns its response to an origin that cannot read
+// it. The writes are the whole attack surface — an attacker page cannot read
+// `placement.csrf` to echo it, so it cannot reach these two.
+router.post("/", requireCsrf, createEventController);
 router.get("/", getEventsController);
 router.get("/:id", getEventByIdController);
-router.patch("/:id", updateEventController);
+router.patch("/:id", requireCsrf, updateEventController);
 
 export default router;

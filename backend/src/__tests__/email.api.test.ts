@@ -21,12 +21,20 @@ jest.mock("../modules/auth/auth.middleware", () => ({
     next();
   },
 }));
-import request from "supertest";
 import app from "../app";
+import { browserWithToken, CSRF_HEADER } from "./helpers/csrf";
 
+// PR-8B. `POST /email` is behind `requireCsrf` now, so a request with no cookie
+// jar and no `X-CSRF-Token` is refused before the controller runs. These two
+// requests are built the way the browser builds them — an ordinary read first,
+// then the token it was issued echoed back — which leaves the ingestion
+// contract below exactly as it was. The check itself is exercised in
+// `modules/auth/__tests__/csrf.api.test.ts`, not here.
 describe("POST /email", () => {
   test("accepts a valid email and queues it for processing", async () => {
-    const res = await request(app).post("/email").send({
+    const { agent, token } = await browserWithToken(app);
+
+    const res = await agent.post("/email").set(CSRF_HEADER, token).send({
       subject: "Amazon OA",
       body: "Amazon OA on 20th Aug venue: PFA seating plan",
       sender: "tpo@college.edu",
@@ -40,7 +48,9 @@ describe("POST /email", () => {
   });
 
   test("rejects an email missing required fields", async () => {
-    const res = await request(app).post("/email").send({
+    const { agent, token } = await browserWithToken(app);
+
+    const res = await agent.post("/email").set(CSRF_HEADER, token).send({
       body: "Amazon OA on 20th Aug",
     });
 

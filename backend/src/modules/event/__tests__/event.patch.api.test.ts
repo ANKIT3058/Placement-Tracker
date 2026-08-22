@@ -174,8 +174,8 @@ jest.mock("../../auth/auth.middleware", () => ({
   },
 }));
 
-import request from "supertest";
 import app from "../../../app";
+import { browserWithToken, CSRF_HEADER } from "../../../__tests__/helpers/csrf";
 import { prisma } from "../../../lib/prisma";
 
 type Row = Record<string, unknown>;
@@ -235,10 +235,22 @@ const seed = () => {
 const event = (id: number): Row => events.find((r) => r.id === id)!;
 const history = (): Row[] => eventUpdates;
 
-const patch = (id: number, body: unknown) =>
-  request(app)
+/* PR-8B. `PATCH /event/:id` is behind `requireCsrf` now, so a bare
+   `request(app)` — no cookie jar, no `X-CSRF-Token` — is refused with 403
+   before the controller runs, and every assertion below would be measuring a
+   refusal instead of the allowlist contract.
+
+   Each call therefore builds a legitimate browser: an ordinary read to be
+   issued `placement.csrf`, then that token echoed back. The middleware is real
+   and is not bypassed; only the request is made the way a browser makes it. */
+const patch = async (id: number, body: unknown) => {
+  const { agent, token } = await browserWithToken(app);
+
+  return agent
     .patch("/event/" + id)
+    .set(CSRF_HEADER, token)
     .send(body as object);
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
