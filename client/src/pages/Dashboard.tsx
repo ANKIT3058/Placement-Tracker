@@ -150,7 +150,18 @@ export default function Dashboard() {
         </header>
 
         <main className="dashboard-main">
-          <EmailInput refresh={fetchData} />
+          {/* Manual ingestion is an authenticated feature — POST /email is
+              behind requireAuth and Email.userId is NOT NULL, so a signed-out
+              caller has no owner to attribute a row to and is refused. Offering
+              the form in that state advertises an action that cannot succeed,
+              directly above the panel explaining they are signed out.
+
+              Only the authentication-required state hides it. A 500 says
+              nothing about who the user is, and during loading nothing is known
+              yet, so both keep the form exactly where it was. */}
+          {!isAuthenticationRequired(error) && (
+            <EmailInput refresh={fetchData} />
+          )}
 
           {loading ? (
             <section className="section" aria-busy="true">

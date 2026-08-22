@@ -137,3 +137,71 @@ describe("a server failure is reported as a failure", () => {
     await waitFor(() => expect(signInLink()).not.toBeInTheDocument());
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * PR-7C. Manual ingestion is an authenticated feature.
+ *
+ * POST /email is behind requireAuth and Email.userId is NOT NULL, so a
+ * signed-out caller has no owner to attribute a row to and is refused. Offering
+ * the paste-and-extract form to someone in that state advertises an action that
+ * cannot succeed — directly above a panel telling them they are signed out.
+ *
+ * An empty account is emphatically NOT the same state: a signed-in user with no
+ * events is exactly who most needs the form.
+ * ------------------------------------------------------------------ */
+
+const emailInput = () =>
+  screen.queryByRole("button", { name: /extract events/i });
+
+describe("the manual email form follows the authentication state", () => {
+  it("is not offered to a signed-out user", async () => {
+    vi.mocked(getEvents).mockRejectedValue(httpError(401));
+
+    render(<Dashboard />);
+    await settled();
+
+    await waitFor(() => expect(emailInput()).not.toBeInTheDocument());
+  });
+
+  it("leaves the sign-in prompt as the only call to action", async () => {
+    vi.mocked(getEvents).mockRejectedValue(httpError(401));
+
+    render(<Dashboard />);
+    await settled();
+
+    await waitFor(() => expect(signInLink()).toBeInTheDocument());
+    expect(emailInput()).not.toBeInTheDocument();
+  });
+
+  it("is offered to a signed-in user who has events", async () => {
+    vi.mocked(getEvents).mockResolvedValue([]);
+
+    render(<Dashboard />);
+    await settled();
+
+    // (fixtures for populated dashboards live in Dashboard.temporal.test.tsx;
+    // presence of the control is what matters here)
+    await waitFor(() => expect(emailInput()).toBeInTheDocument());
+  });
+
+  it("is offered to a signed-in user with no events yet", async () => {
+    vi.mocked(getEvents).mockResolvedValue([]);
+
+    render(<Dashboard />);
+    await settled();
+
+    // empty account ≠ signed out
+    expect(await screen.findByText("No events yet")).toBeInTheDocument();
+    expect(emailInput()).toBeInTheDocument();
+  });
+
+  it("is offered when the failure is not an authentication problem", async () => {
+    vi.mocked(getEvents).mockRejectedValue(httpError(500));
+
+    render(<Dashboard />);
+    await settled();
+
+    // A 500 says nothing about who the user is, so the form stays.
+    await waitFor(() => expect(emailInput()).toBeInTheDocument());
+  });
+});

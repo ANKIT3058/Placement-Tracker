@@ -39,6 +39,40 @@ function AlertIcon() {
   );
 }
 
+/* What to tell the user when a submission fails.
+ *
+ * `requestJson` rejects with an `ApiError` carrying the HTTP status for any
+ * non-2xx response, and lets a genuine network failure through untouched — so
+ * the presence of a numeric `status` is exactly the line between "the server
+ * answered and refused" and "the server was never reached". Reporting every
+ * failure as a connectivity problem, as this component used to, sends a user
+ * whose session expired off to debug a network that is working.
+ *
+ * The backend's own message (e.g. "Missing required fields") is not available
+ * here: `requestJson` records the status and discards the body. Recovering it
+ * would change shared API-client behaviour for every caller, so it is left for
+ * a later change; the status alone is enough to name the right category. */
+const messageForError = (error: unknown): string => {
+  const status =
+    typeof error === "object" && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+
+  if (typeof status !== "number") {
+    return "Could not reach the server. Check your connection and try again.";
+  }
+
+  if (status === 401) {
+    return "Your session has expired. Please sign in again.";
+  }
+
+  if (status === 400) {
+    return "That email could not be processed. Check the content and try again.";
+  }
+
+  return "The server could not process that email. Please try again.";
+};
+
 export default function EmailInput({ refresh }: { refresh: () => void }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
@@ -51,24 +85,19 @@ export default function EmailInput({ refresh }: { refresh: () => void }) {
     setSuccess(false);
     setError(null);
     try {
-      const result = await processEmail(text);
-
-      /* The API answers { success, message }. Only an explicit `false` is
-         treated as a failure, so an unexpected payload shape can never
-         turn a successful request into a phantom error. */
-      if (result && result.success === false) {
-        setError(
-          result.message || "Could not process that email. Please try again.",
-        );
-        return;
-      }
+      /* Resolving means 2xx. The old `result.success === false` check here was
+         unreachable once `requestJson` began throwing on non-2xx — the backend
+         only sends that flag alongside a 400 or a 500 — and two competing
+         error models in one handler is what let every failure report the wrong
+         cause. Failure is handled in exactly one place now: the catch. */
+      await processEmail(text);
 
       setText("");
       setSuccess(true);
       refresh();
       setTimeout(() => setSuccess(false), 3000);
-    } catch {
-      setError("Could not reach the server. Check your connection and try again.");
+    } catch (err) {
+      setError(messageForError(err));
     } finally {
       setLoading(false);
     }
