@@ -30,5 +30,25 @@ declare module "express-session" {
     // them breaks legitimate users on mobile networks and browser upgrades.
     ip?: string;
     userAgent?: string;
+
+    // PRE-AUTHENTICATION OAUTH FIELDS (RFC-001 §10.1).
+    //
+    // Written on an anonymous session at /gmail/auth and consumed at the
+    // callback. They are what binds an authorization response to the browser
+    // that asked for it: without them the callback cannot tell a response to
+    // its own request from one an attacker obtained and induced a victim to
+    // visit.
+    //
+    // All three are optional because they exist only for the minutes between
+    // starting a flow and completing it, and `establishSession`'s regenerate
+    // discards whatever remains.
+    //
+    // The verifier is a credential and never leaves the backend — only its
+    // SHA-256 challenge is published to Google. That is the one exception to
+    // the note above about sessions holding no credentials, and it holds for
+    // one flow rather than for a session's lifetime.
+    oauthState?: string;
+    oauthStateExpiresAt?: number;
+    oauthCodeVerifier?: string;
   }
 }

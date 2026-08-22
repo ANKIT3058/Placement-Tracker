@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { createHash, randomBytes } from "node:crypto";
 import {
   generateAuthUrl,
   getTokens,
@@ -15,10 +16,107 @@ import { establishSession } from "../auth/session.service.js";
 import { requireTenantContext } from "../auth/tenant-context.js";
 import { syncUserMailboxes } from "./gmail.sync.service.js";
 
-export const gmailAuthController = (req: Request, res: Response) => {
-  const url = generateAuthUrl();
+// How long an authorization flow may stay open (RFC-001 §10.1). Independent of
+// the session's own TTL: the session may live for days, this must not.
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
-  return res.redirect(url);
+// One answer for every state failure — missing, mismatched, expired, replayed.
+// Naming which one would tell an attacker which half of their guess was right;
+// the reason is logged server-side instead.
+const OAUTH_STATE_ERROR = {
+  success: false,
+  message: "Invalid or expired authorization request",
+} as const;
+
+// `req.session.save` is callback-based. Promisified here rather than in
+// session.service because it is plumbing for this flow, not part of the
+// session contract.
+const saveSession = (req: Request): Promise<void> =>
+  new Promise((resolve, reject) => {
+    req.session.save((error) => (error ? reject(error) : resolve()));
+  });
+
+// Begin an authorization flow.
+//
+// The two secrets are generated here and remembered on the anonymous session,
+// which is what lets the callback recognise its own request later. Google
+// receives the state and the challenge; the verifier stays on this server.
+export const gmailAuthController = async (req: Request, res: Response) => {
+  try {
+    const state = randomBytes(32).toString("base64url");
+    const codeVerifier = randomBytes(32).toString("base64url");
+    const codeChallenge = createHash("sha256")
+      .update(codeVerifier)
+      .digest("base64url");
+
+    req.session.oauthState = state;
+    req.session.oauthStateExpiresAt = Date.now() + OAUTH_STATE_TTL_MS;
+    req.session.oauthCodeVerifier = codeVerifier;
+
+    // Before the redirect, not after. `saveUninitialized: false` means an
+    // anonymous session is not written unless it is saved explicitly, so
+    // redirecting first would send the browser to Google carrying no cookie
+    // and leave the callback with nothing to compare against — every login
+    // would fail closed.
+    await saveSession(req);
+
+    return res.redirect(generateAuthUrl(state, codeChallenge));
+  } catch (error) {
+    console.error("[gmail-auth] Failed to start the authorization flow", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to start sign-in",
+    });
+  }
+};
+
+// Validate the authorization response against what this browser asked for.
+//
+// Returns the PKCE verifier on success and null on any failure — the caller
+// cannot tell the failures apart, and neither can the client.
+const readPendingOAuth = (req: Request): { codeVerifier: string } | null => {
+  const provided = req.query.state;
+  const expected = req.session.oauthState;
+  const expiresAt = req.session.oauthStateExpiresAt;
+  const codeVerifier = req.session.oauthCodeVerifier;
+
+  if (typeof provided !== "string" || !provided) {
+    console.warn("[gmail-callback] Authorization response carried no state");
+    return null;
+  }
+
+  // Absent because this browser never started a flow, or because it already
+  // completed one — the replay case.
+  if (!expected || !codeVerifier) {
+    console.warn("[gmail-callback] No authorization flow is open for this session");
+    return null;
+  }
+
+  if (typeof expiresAt !== "number" || Date.now() >= expiresAt) {
+    console.warn("[gmail-callback] Authorization flow expired");
+    return null;
+  }
+
+  if (provided !== expected) {
+    // The login-CSRF case: a genuine authorization response, for a flow this
+    // browser did not start.
+    console.warn("[gmail-callback] Authorization state did not match the session");
+    return null;
+  }
+
+  return { codeVerifier };
+};
+
+// Consume the flow, so a state cannot be presented twice. Persisted before the
+// token exchange rather than after, because a replay arriving mid-exchange
+// would otherwise still find the state live.
+const consumeOAuthState = async (req: Request): Promise<void> => {
+  delete req.session.oauthState;
+  delete req.session.oauthStateExpiresAt;
+  delete req.session.oauthCodeVerifier;
+
+  await saveSession(req);
 };
 
 // Google OAuth callback.
@@ -33,11 +131,27 @@ export const gmailAuthController = (req: Request, res: Response) => {
 // the caller is authenticated. No route consumes that session yet — reading it
 // back to identify a caller is `requireAuth` in AC-5.5.
 //
-// The OAuth `state` parameter is still absent (RFC-001 §10.1). That was
-// tolerable while the callback issued nothing; now that it issues a session it
-// is a live CSRF hole and must close before this flow is exposed to real users.
+// The `state` and PKCE checks come first (RFC-001 §10.1). Until they existed,
+// this endpoint would establish a session from any valid authorization code —
+// including one an attacker obtained for their own Google identity and then
+// induced a victim to visit, which handed the victim's browser a session for
+// the attacker's tenant. The code is still genuine and the identity still
+// verifies in that scenario; the only thing wrong is that this is not the
+// browser that asked, and that is precisely what the state proves.
 export const gmailCallbackController = async (req: Request, res: Response) => {
   try {
+    // FIRST, before anything with a side effect. An authorization response
+    // this browser did not ask for must not reach the token exchange, the
+    // User upsert, the mailbox write, or the session — a rejected response
+    // leaves no trace at all.
+    const pending = readPendingOAuth(req);
+
+    if (!pending) {
+      return res.status(400).json(OAUTH_STATE_ERROR);
+    }
+
+    await consumeOAuthState(req);
+
     const code = req.query.code as string;
 
     if (!code) {
@@ -47,7 +161,7 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
       });
     }
 
-    const tokens = await getTokens(code);
+    const tokens = await getTokens(code, pending.codeVerifier);
 
     if (!tokens.id_token) {
       throw new Error("Google did not return an ID token");

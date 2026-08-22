@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { CodeChallengeMethod } from "google-auth-library";
 import type { Credentials } from "google-auth-library";
 import type { AttachmentMetadata } from "../attachment/attachment.types.js";
 import type { GoogleIdentity } from "../user/user.types.js";
@@ -15,11 +16,27 @@ export const oauth2Client = new google.auth.OAuth2(
 // codebase can be shown to make.
 const GOOGLE_ISSUERS = ["accounts.google.com", "https://accounts.google.com"];
 
-export const generateAuthUrl = () => {
+// Build the Google consent URL for one flow.
+//
+// `state` and `codeChallenge` are required parameters rather than options: both
+// are what make the eventual callback verifiable, and a caller that could omit
+// them would reintroduce the login-CSRF hole silently (RFC-001 §10.1). The
+// challenge is the SHA-256 of a verifier the caller keeps server-side — Google
+// receives the hash, never the secret.
+export const generateAuthUrl = (state: string, codeChallenge: string) => {
   return oauth2Client.generateAuthUrl({
     access_type: "offline",
 
     prompt: "consent",
+
+    // Binds the authorization response to the browser that started the flow.
+    state,
+
+    // PKCE. S256 and never `plain`: `plain` puts the verifier itself in the
+    // authorization request, which defends nothing against anyone able to read
+    // it.
+    code_challenge_method: CodeChallengeMethod.S256,
+    code_challenge: codeChallenge,
 
     // `openid` is what makes Google return an ID token; without it the response
     // carries an access token only and there is no signed identity to verify.
@@ -34,8 +51,14 @@ export const generateAuthUrl = () => {
   });
 };
 
-export const getTokens = async (code: string) => {
-  const { tokens } = await oauth2Client.getToken(code);
+// Redeem the authorization code.
+//
+// The verifier is required, not optional. Google recomputes its SHA-256 and
+// compares it with the challenge sent at authorization time, so a code
+// intercepted in transit cannot be redeemed by anyone who does not also hold
+// the verifier — which never left this server.
+export const getTokens = async (code: string, codeVerifier: string) => {
+  const { tokens } = await oauth2Client.getToken({ code, codeVerifier });
 
   // Deliberately not logged. This object now carries a refresh token and an ID
   // token; printing it writes long-lived mailbox credentials to stdout and into
