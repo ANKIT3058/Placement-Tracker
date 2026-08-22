@@ -1,7 +1,7 @@
 import { prisma } from "../../lib/prisma.js";
 import { createEvent } from "./event.repository.js";
 
-import { generateEventKey } from "./event.utils.js";
+import { generateEventKey, classifyTemporalStatus } from "./event.utils.js";
 import { toUTCDate, toISTKey } from "../../shared/utils/date.js";
 import type { CreateEventInput, ManualEventUpdate } from "./event.types.js";
 import type { OwnershipContext } from "../auth/tenant-context.js";
@@ -203,6 +203,14 @@ export const detectChanges = (existing: any, incoming: any) => {
 };
 
 // GET EVENTS
+//
+// Each Event carries a derived `temporalStatus` (see `classifyTemporalStatus`).
+// It is attached on the way out rather than stored, so the category is always a
+// statement about now and never a stale column; the query, the tenant predicate
+// and the ordering are untouched.
+//
+// One `now` classifies the whole list, so two Events either side of a boundary
+// cannot be judged against different instants within a single response.
 export const getEventsService = async (
   owner: OwnershipContext,
   { status }: { status?: string },
@@ -211,10 +219,17 @@ export const getEventsService = async (
 
   if (status) where.status = status;
 
-  return prisma.event.findMany({
+  const events = await prisma.event.findMany({
     where,
     orderBy: { confidence: "asc" }, // low confidence first
   });
+
+  const now = new Date();
+
+  return events.map((event) => ({
+    ...event,
+    temporalStatus: classifyTemporalStatus(event, now),
+  }));
 };
 
 // GET SINGLE EVENT

@@ -1,5 +1,22 @@
 import type { VenueMeta } from "../email/email.parser.js";
 
+// Where an Event sits relative to now.
+//
+// DERIVED, never persisted. It is a pure function of `date`, `time`,
+// `isTimeEstimated` and the current instant, so there is no column to keep in
+// step with the clock and no job to age rows out — an Event crosses from
+// upcoming to expired without anything being written.
+//
+// Orthogonal to `status`, which records lifecycle (review / confirmed /
+// rescheduled). A confirmed Event can be either temporal category.
+export const TEMPORAL_STATUS = {
+  UPCOMING: "upcoming",
+  EXPIRED: "expired",
+} as const;
+
+export type TemporalStatus =
+  (typeof TEMPORAL_STATUS)[keyof typeof TEMPORAL_STATUS];
+
 // THE MANUAL REVIEW CONTRACT.
 //
 // The two fields the review UI lets a human correct (`ReviewCard.tsx`), and the
