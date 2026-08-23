@@ -73,3 +73,79 @@ worker.on("completed", (job) => {
 worker.on("failed", (job, err) => {
   console.error(`Job ${job?.id} failed`, err);
 });
+
+// GRACEFUL SHUTDOWN (PR-9B).
+//
+// This process is stopped by a signal — a deploy, a restart, a host recycling
+// its container. Without a handler it dies mid-job while still holding that
+// job's Redis lock, and BullMQ cannot tell an abandoned job from a slow one: it
+// waits out `lockDuration` (30s by default), the stalled checker returns the
+// job to `wait`, and the job runs again from the top.
+//
+// That replay is not free. `createExtraction` has no unique constraint, so every
+// interrupted job costs a duplicate EmailExtraction row — and because
+// `maxStalledCount` defaults to 1, a job interrupted twice is failed
+// permanently and silently. Deploying is itself the event that triggers this,
+// which is why it is worth closing before the worker first runs in production.
+//
+// `close()` and never `close(true)`. The forced variant abandons the running
+// job, which is the precise outcome this exists to prevent; it would satisfy
+// "the worker shuts down" while making the failure mode worse.
+let shuttingDown: Promise<void> | null = null;
+
+const shutdown = (signal: NodeJS.Signals): Promise<void> => {
+  // A host may send SIGTERM and then be interrupted, or a terminal may send
+  // SIGINT while a SIGTERM drain is already running. Returning the in-flight
+  // promise rather than starting a second one keeps two `close()` calls off the
+  // same BullMQ internals; the state IS the promise, so there is no window
+  // between checking and setting it.
+  if (shuttingDown) {
+    return shuttingDown;
+  }
+
+  shuttingDown = (async () => {
+    console.log(`Received ${signal}, shutting down worker...`);
+
+    try {
+      // Stops accepting new jobs, then waits for the active one to finish.
+      await worker.close();
+
+      // The worker's blocking connection is BullMQ's own duplicate and is
+      // closed by `close()` above. This is the shared client the process itself
+      // owns. A failed QUIT cannot endanger a job that has already drained, so
+      // it must not turn a clean shutdown into a failed one.
+      try {
+        await redis.quit();
+      } catch {
+        // Already closed, or closing. Nothing left to do either way.
+      }
+
+      console.log("Worker shut down successfully");
+
+      // Explicit, because natural termination would hang here. The `pg.Pool`
+      // behind the Prisma client is created at module scope in `lib/prisma.ts`
+      // and is not exported, so this process cannot end it without changing
+      // that module's lifecycle — out of scope for this change. Its open
+      // connections keep the event loop alive indefinitely.
+      //
+      // Safe at this point precisely because it is after the awaits: `close()`
+      // has resolved, so the active job finished and every database write it
+      // awaited has completed. Nothing is left in flight to cut short.
+      process.exit(0);
+    } catch (error) {
+      console.error("Worker shutdown failed", error);
+
+      process.exit(1);
+    }
+  })();
+
+  return shuttingDown;
+};
+
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+process.on("SIGINT", () => {
+  void shutdown("SIGINT");
+});
