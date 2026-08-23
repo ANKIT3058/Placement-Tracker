@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { CodeChallengeMethod } from "google-auth-library";
 import type { Credentials } from "google-auth-library";
+import type { gmail_v1 } from "googleapis";
 import type { AttachmentMetadata } from "../attachment/attachment.types.js";
 import type { GoogleIdentity } from "../user/user.types.js";
 import { GMAIL_REQUEST_TIMEOUT_MS } from "../../shared/constants/config.js";
@@ -180,15 +181,47 @@ export const getGmailAddress = async (tokens: Credentials) => {
   return profile.data.emailAddress;
 };
 
+// Every message the mailbox will hand over, not just the first page.
+//
+// `maxResults` is a PER-PAGE limit — Google documents it as defaulting to 100
+// with a maximum of 500 — and a `nextPageToken` in the response means more
+// messages exist. Reading one page and discarding the token therefore drops an
+// unbounded remainder, and `syncGmailAccount` then advances the account's
+// historyId past everything it never saw, putting those messages permanently
+// beyond the reach of any later incremental sync (F-3a).
+//
+// The walk continues on the TOKEN, never on whether a page had messages: a page
+// can come back empty while more remain behind it, and stopping there would
+// discard the rest just as silently.
+//
+// A page that rejects propagates. There is deliberately no catch here — a
+// partial listing must not be mistaken for a complete mailbox, because the
+// caller writes the watermark on success and a swallowed page error would turn
+// a retryable failure into a permanent gap.
+//
+// No page cap, for the same reason: a cap is the original bug wearing a
+// different name. Each request is independently bounded by the client timeout
+// configured in `createOAuthClient` (PR-8G), so the loop needs no deadline of
+// its own.
 export const getRecentMessages = async (refreshToken: string) => {
   const gmail = gmailFor({ refresh_token: refreshToken });
 
-  const response = await gmail.users.messages.list({
-    userId: "me",
-    maxResults: 100,
-  });
+  const messages: gmail_v1.Schema$Message[] = [];
+  let pageToken: string | undefined;
 
-  return response.data.messages ?? [];
+  do {
+    const response = await gmail.users.messages.list({
+      userId: "me",
+      maxResults: 100,
+      pageToken,
+    });
+
+    messages.push(...(response.data.messages ?? []));
+
+    pageToken = response.data.nextPageToken ?? undefined;
+  } while (pageToken);
+
+  return messages;
 };
 
 export const getMessageDetails = async (
