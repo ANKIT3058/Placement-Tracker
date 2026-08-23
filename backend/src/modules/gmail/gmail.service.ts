@@ -3,6 +3,7 @@ import { CodeChallengeMethod } from "google-auth-library";
 import type { Credentials } from "google-auth-library";
 import type { AttachmentMetadata } from "../attachment/attachment.types.js";
 import type { GoogleIdentity } from "../user/user.types.js";
+import { GMAIL_REQUEST_TIMEOUT_MS } from "../../shared/constants/config.js";
 
 // One client per PROCESS for the OAuth flow itself; one client per OPERATION
 // for anything that touches a mailbox.
@@ -24,11 +25,32 @@ import type { GoogleIdentity } from "../user/user.types.js";
 // timing around it. No other operation can reach an operation's client, so no
 // interleaving can cross their credentials.
 const createOAuthClient = () =>
-  new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI,
-  );
+  new google.auth.OAuth2({
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    redirectUri: process.env.GOOGLE_REDIRECT_URI,
+
+    // The one place a deadline can be attached to everything at once.
+    //
+    // google-auth-library builds its transporter from these options and then
+    // uses that single gaxios instance for BOTH halves of every mailbox
+    // operation: its own OAuth token refresh, and the Gmail API call googleapis
+    // dispatches through `authClient.request`. Configuring it here therefore
+    // bounds the token refresh, every Gmail request, every page of a paginated
+    // walk, and the attachment download — without repeating a timeout at the
+    // six call sites, where one omission would silently reopen the hole.
+    //
+    // `transporterOptions` rather than a hand-built transporter, so the library
+    // still constructs and instruments its own (it attaches request/response
+    // interceptors to whatever it ends up with). This contributes the deadline
+    // and nothing else.
+    //
+    // gaxios turns `timeout` into `AbortSignal.timeout()`, which aborts the
+    // underlying fetch. That distinction is the point: abandoning the promise
+    // instead would leave the socket open and the scheduler still holding a
+    // reference to work that never ends.
+    transporterOptions: { timeout: GMAIL_REQUEST_TIMEOUT_MS },
+  });
 
 // The shared client, used only by the three operations that act as THIS
 // APPLICATION rather than as a user: `generateAuthUrl`, `getTokens` and
