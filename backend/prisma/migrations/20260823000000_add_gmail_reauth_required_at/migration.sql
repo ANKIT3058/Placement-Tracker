@@ -1,0 +1,12 @@
+-- PR-8F — record when a mailbox's Google authorization became permanently invalid.
+--
+-- Google answers a revoked or expired refresh token with HTTP 400
+-- `invalid_grant` and documents the remedy as re-authenticating the user and
+-- asking for consent again. Presenting the same token cannot succeed, so the
+-- background scheduler needs a way to stop attempting it; without one it
+-- retried every cycle indefinitely while the mailbox still looked connected.
+--
+-- Nullable, with no default and no backfill: every existing row keeps NULL and
+-- therefore stays eligible for automatic sync. No currently connected mailbox
+-- can be disabled by this migration.
+ALTER TABLE "GmailAccount" ADD COLUMN "reauthRequiredAt" TIMESTAMP(3);

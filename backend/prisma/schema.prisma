@@ -243,6 +243,17 @@ model GmailAccount {
   connectedAt  DateTime @default(now())
   createdAt    DateTime @default(now())
 
+  // When Google last refused this mailbox's refresh token as permanently
+  // invalid — HTTP 400 `invalid_grant`, which Google documents as requiring the
+  // user to authenticate and consent again. Presenting the same token cannot
+  // succeed, so the background scheduler skips the mailbox until a reconnect
+  // clears this; an explicit user-triggered sync may still attempt it.
+  //
+  // Nullable rather than a status enum: existing rows need no backfill, and the
+  // timestamp records WHEN authentication broke, which a boolean would lose.
+  // NULL means the mailbox is eligible for automatic sync.
+  reauthRequiredAt DateTime?
+
   user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   emails Email[]
 

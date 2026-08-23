@@ -10,9 +10,16 @@ import {
   getEmailByGmailMessageId,
 } from "../email/email.repository.js";
 import { enqueueEmailProcessing } from "../email/email.producer.js";
-import { updateHistoryId, getGmailAccountsByUser } from "./gmail.repository.js";
+import {
+  updateHistoryId,
+  getGmailAccountsByUser,
+  setGmailAccountReauthRequired,
+} from "./gmail.repository.js";
 import type { TenantContext } from "../auth/tenant-context.js";
-import { describeGmailError } from "./gmail.errors.js";
+import {
+  describeGmailError,
+  isPermanentGmailAuthFailure,
+} from "./gmail.errors.js";
 
 export type SyncMessageResult =
   | { status: "duplicate"; emailId: number }
@@ -82,6 +89,10 @@ export type SyncableAccount = {
   // Owner of the mailbox, propagated onto every Email it produces. Required as
   // of AC-5.9 — every mailbox has an owner.
   userId: number;
+  // Set when Google last refused this mailbox permanently (PR-8F). Read only to
+  // avoid a redundant write when clearing it after a successful sync; optional
+  // so callers constructing a minimal account shape stay valid.
+  reauthRequiredAt?: Date | null;
 };
 
 const isHistoryIdExpired = (error: unknown): boolean => {
@@ -160,11 +171,11 @@ export const syncGmailAccount = async (
     };
   };
 
-  let result: SyncAccountResult;
+  const runSync = async (): Promise<SyncAccountResult> => {
+    if (!account.historyId) {
+      return runFullSync();
+    }
 
-  if (!account.historyId) {
-    result = await runFullSync();
-  } else {
     try {
       const { messageIds, latestHistoryId } = await getHistoryChanges(
         refreshToken,
@@ -173,7 +184,7 @@ export const syncGmailAccount = async (
 
       const stats = await processMessages(account, messageIds);
 
-      result = {
+      return {
         mode: "incremental",
         totalFetched: messageIds.length,
         stats,
@@ -188,11 +199,40 @@ export const syncGmailAccount = async (
         `History ID ${account.historyId} expired, falling back to full sync`,
       );
 
-      result = await runFullSync();
+      return runFullSync();
     }
+  };
+
+  let result: SyncAccountResult;
+
+  // The one place that knows BOTH which mailbox failed and why, which is why
+  // the transition lives here rather than in either caller. Both the scheduler
+  // and an explicit user sync reach this, so neither can drift from the other.
+  try {
+    result = await runSync();
+  } catch (error) {
+    if (isPermanentGmailAuthFailure(error)) {
+      // Google will not accept this refresh token again, so record that and let
+      // the automatic scheduler skip the mailbox until the user reconnects. The
+      // token itself is left in place: Google has already invalidated it, so
+      // deleting it protects nothing and only makes reconnect harder to reason
+      // about (PR-8F).
+      await setGmailAccountReauthRequired(account.email, new Date());
+    }
+
+    // Rethrown unchanged. Callers still count the failure, still log it through
+    // the safe formatter, and still move on to the next mailbox.
+    throw error;
   }
 
   await updateHistoryId(account.email, result.latestHistoryId);
+
+  // Reaching here means the mailbox authenticated and completed a sync, so a
+  // previous permanent failure is over. Written only when the flag was actually
+  // set, to keep the ordinary success path at one write.
+  if (account.reauthRequiredAt) {
+    await setGmailAccountReauthRequired(account.email, null);
+  }
 
   return result;
 };

@@ -93,3 +93,34 @@ export const describeGmailError = (error: unknown): GmailErrorSummary => {
 
   return summary;
 };
+
+/* Is this failure one that retrying can never fix?
+ *
+ * TRUE for exactly one case: HTTP 400 carrying Google's `invalid_grant`. Google
+ * documents that as the refresh token having "expired or has been invalidated",
+ * with the remedy being to "authenticate the user again and ask for user
+ * consent" — so presenting the same token cannot succeed, however many times it
+ * is tried. A mailbox in that state needs a person, not another attempt.
+ *
+ * FALSE for everything else, deliberately:
+ *
+ *   429, 5xx, network        transient by definition; gaxios already retries
+ *                            these at the transport layer.
+ *   401                      ambiguous, and routinely cured by the very token
+ *                            refresh the library performs on its own.
+ *   403                      covers rate limiting as readily as a scope or
+ *                            policy error; the status cannot tell them apart.
+ *   400 without invalid_grant a malformed request is this application's bug,
+ *                            not a revoked authorization.
+ *
+ * Excluding a mailbox on any of those would strand a user whose mailbox is
+ * perfectly healthy — a worse outcome than the futile retrying this prevents.
+ *
+ * Built on `describeGmailError` rather than re-reading the error, so one
+ * allowlist decides what may be read off a credential-bearing error object.
+ */
+export const isPermanentGmailAuthFailure = (error: unknown): boolean => {
+  const { status, googleError } = describeGmailError(error);
+
+  return status === 400 && googleError === "invalid_grant";
+};

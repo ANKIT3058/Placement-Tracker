@@ -53,6 +53,16 @@ export const connectGmailAccount = async (
     },
     data: {
       refreshToken,
+
+      // A successful reconnect is exactly the event this state was waiting for:
+      // the user has authorized the mailbox again and the token below is the
+      // proof. Clearing it here is what makes the mailbox eligible for the
+      // scheduler again (PR-8F).
+      //
+      // `historyId` is deliberately untouched, as it always has been, so sync
+      // resumes incrementally rather than re-reading the mailbox.
+      reauthRequiredAt: null,
+
       ...(isLinkable ? { userId } : {}),
     },
   });
@@ -123,8 +133,45 @@ export const getLatestConnectedGmailAccount = async () => {
 // derive a tenant from, and scheduler changes are out of scope for AC-5.6. It
 // remains correct for now because each account carries its own owner and its own
 // cursor, so a per-account sync is already tenant-safe (RFC-001 §14.2 S2).
+//
+// Mailboxes whose Google authorization has permanently failed are excluded
+// (PR-8F). Google answers a revoked refresh token with `invalid_grant` and
+// requires the user to consent again, so re-presenting it every cycle is work
+// that cannot ever succeed — roughly 720 futile token requests a day per
+// mailbox, indefinitely.
+//
+// The filter lives HERE and not in `getGmailAccountsByUser`, which is the
+// deliberate half of this change: this resolver serves only the automatic
+// scheduler, so a person who explicitly asks for a sync can still reach a
+// mailbox in this state. Automatic work backs off; a user action does not.
 export const getAllGmailAccounts = async () => {
-  return prisma.gmailAccount.findMany();
+  return prisma.gmailAccount.findMany({
+    where: {
+      reauthRequiredAt: null,
+    },
+  });
+};
+
+// Record — or clear — the fact that a mailbox needs the user to authorize it
+// again. Written as one setter rather than a mark/clear pair because the two
+// callers are the two ends of the same transition and a single function keeps
+// the column's meaning in one place.
+//
+// Keyed by email, like `updateHistoryId`, because that is the column the
+// mailbox is unique on. The value is never caller-supplied: it comes from a row
+// the caller already resolved.
+export const setGmailAccountReauthRequired = async (
+  email: string,
+  at: Date | null,
+) => {
+  return prisma.gmailAccount.update({
+    where: {
+      email,
+    },
+    data: {
+      reauthRequiredAt: at,
+    },
+  });
 };
 
 export const updateHistoryId = async (email: string, historyId: string) => {
