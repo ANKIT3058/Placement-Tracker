@@ -1,0 +1,26 @@
+-- PR-9G — one extraction per email, enforced by the database.
+--
+-- `createExtraction` was an unconditional INSERT. The email-processing job is
+-- replayed whenever the worker dies holding its BullMQ lock: the lock expires
+-- after `lockDuration` (30s), the stalled checker returns the job to `wait`, and
+-- it runs again from the top — re-inserting an extraction the previous attempt
+-- had already committed. PR-9E traced every crash point in that path and found
+-- they all converge on this one symptom.
+--
+-- A deterministic BullMQ jobId does not prevent it. That guarantees at most one
+-- *job* per email; it says nothing about side effects a job already committed,
+-- because Redis cannot observe what Postgres did. Nor does an application-side
+-- `findFirst` before `create`: two statements with a window between them, safe
+-- only while worker concurrency happens to be 1, which is a scheduling default
+-- rather than an invariant.
+--
+-- Composite with `userId` rather than keyed on `emailId` alone: `emailId` is
+-- unique only within an owner, and the relation to Email is itself composite
+-- (RFC-001 §12.3). Keyed on the email alone, one tenant's replay could address
+-- another tenant's row.
+--
+-- Purely additive, and deliberately carries no data cleanup: PR-9F verified
+-- against production that all 117 EmailExtraction rows are already distinct on
+-- (emailId, userId), with zero duplicate groups. The index builds without a
+-- de-duplication step.
+CREATE UNIQUE INDEX "EmailExtraction_emailId_userId_key" ON "EmailExtraction"("emailId", "userId");

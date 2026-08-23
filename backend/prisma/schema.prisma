@@ -140,7 +140,11 @@ model Email {
   // emails accepted through the manual ingestion route have no mailbox — and a
   // NULL there simply leaves the constraint unchecked for that row.
   gmailAccount GmailAccount?     @relation(fields: [gmailAccountId, userId], references: [id, userId])
-  extractions  EmailExtraction[]
+  // Singular and optional, not a list. An email yields exactly one extraction,
+  // enforced by `@@unique([emailId, userId])` on the other side — see the note
+  // there for why. Prisma derives cardinality from that constraint, so this
+  // field cannot remain `EmailExtraction[]` once it exists.
+  extraction   EmailExtraction?
   attachments  Attachment[]
 
   @@unique([id, userId])
@@ -215,6 +219,28 @@ model EmailExtraction {
   createdAt DateTime @default(now())
 
   email Email @relation(fields: [emailId, userId], references: [id, userId], onDelete: Cascade)
+
+  // One extraction per email, enforced by the DATABASE rather than by the
+  // repository (PR-9G).
+  //
+  // Every crash point in the email-processing path converges on the same
+  // symptom: `createExtraction` ran, the job died before BullMQ acknowledged it,
+  // the stalled checker replayed the job, and the insert ran a second time. A
+  // deterministic BullMQ jobId prevents a duplicate *job*; it says nothing about
+  // side effects a job already committed, because Redis cannot know what
+  // Postgres did.
+  //
+  // Application-side guards do not close this. A `findFirst` before `create` is
+  // two statements with a window between them, and it would appear to work only
+  // for as long as concurrency stays at 1 — which is a scheduling accident, not
+  // an invariant. The constraint holds regardless of worker count, host
+  // restarts, or stalled-job overlap.
+  //
+  // Composite with `userId` rather than keyed on `emailId` alone: `emailId` is
+  // unique only within an owner, and the relation itself is composite
+  // (RFC-001 §12.3). Keyed on the email alone, one tenant's replay could address
+  // another tenant's row.
+  @@unique([emailId, userId])
 }
 
 // The mailbox provider this connection represents (RFC-001 §12.2). A
