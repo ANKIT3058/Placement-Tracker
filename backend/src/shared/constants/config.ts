@@ -60,3 +60,41 @@ export const GMAIL_REQUEST_TIMEOUT_MS = positiveMillis(
   process.env.GMAIL_REQUEST_TIMEOUT_MS,
   10000,
 );
+
+// How often the email reconciler sweeps for Emails that were persisted but
+// never handed to the queue (F-3e).
+//
+// Its own interval, and its own scheduler, deliberately. Reconciliation exists
+// to recover from the moment ingestion fails, so tying it to the Gmail
+// scheduler would make recovery depend on the component most likely to be
+// unhealthy at the time.
+//
+// 60s: an orphan is invisible until the sweep finds it, and the sweep is one
+// indexed-ish query that usually returns nothing, so running it more often than
+// the Gmail cycle costs little and shortens the window in which a lost email
+// goes unnoticed.
+export const EMAIL_RECONCILE_INTERVAL_MS = positiveMillis(
+  process.env.EMAIL_RECONCILE_INTERVAL_MS,
+  60000,
+);
+
+// How long an Email may sit `pending` before the reconciler treats it as never
+// having been queued.
+//
+// A row stays `pending` until a worker picks it up, so a legitimately queued
+// email is indistinguishable from an orphan until this much time has passed.
+// The email worker runs at BullMQ's default concurrency of 1, and a Gmail cycle
+// can enqueue up to a page of messages per mailbox, so a healthy backlog can
+// take minutes to drain — the cutoff has to clear that or the sweep would chase
+// work already in flight.
+//
+// 5 minutes is comfortably past normal drain time while still well inside the
+// window where a lost placement email matters. Getting it wrong is cheap in one
+// direction only, and it is the safe one: every enqueue carries
+// `jobId: email-${id}`, so re-enqueueing a row that already has a job collapses
+// into the existing job rather than duplicating it. Too short wastes a little
+// Redis traffic; too long delays recovery.
+export const EMAIL_RECONCILE_MIN_AGE_MS = positiveMillis(
+  process.env.EMAIL_RECONCILE_MIN_AGE_MS,
+  300000,
+);

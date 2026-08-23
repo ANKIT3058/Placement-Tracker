@@ -138,3 +138,32 @@ export const getPendingEmails = async (owner: OwnershipContext) => {
     },
   });
 };
+
+// Emails that were persisted but never handed to the queue, for the background
+// reconciler.
+//
+// Global, deliberately, and for the same reason `getAllGmailAccounts` is: this
+// runs as background work with no caller to derive a tenant from. Tenant safety
+// is not weakened by that, because every row carries its own `userId` and the
+// reconciler enqueues each one as its own owner — ownership travels with the
+// row rather than with a fabricated context.
+//
+// Separate from `getPendingEmails` above rather than a widening of it. That one
+// is scoped for a future user-facing backlog view and should stay that way; a
+// caller who HAS a tenant should never be handed a global query by accident.
+//
+// `createdAt` is the cutoff column because it is immutable — no code writes it
+// after insert, and there is no `@updatedAt` on Email — so an orphan can never
+// age out of this result by having its timestamp refreshed. `pending` alone
+// would also match rows whose enqueue is still in flight, which is what the
+// caller-supplied `olderThan` excludes.
+export const getStalePendingEmails = async (olderThan: Date) => {
+  return prisma.email.findMany({
+    where: {
+      processingStatus: "pending",
+      createdAt: {
+        lt: olderThan,
+      },
+    },
+  });
+};
