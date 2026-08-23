@@ -15,6 +15,7 @@ import {
 import { establishSession } from "../auth/session.service.js";
 import { requireTenantContext } from "../auth/tenant-context.js";
 import { syncUserMailboxes } from "./gmail.sync.service.js";
+import { describeGmailError } from "./gmail.errors.js";
 
 // How long an authorization flow may stay open (RFC-001 §10.1). Independent of
 // the session's own TTL: the session may live for days, this must not.
@@ -222,7 +223,14 @@ export const gmailCallbackController = async (req: Request, res: Response) => {
       });
     }
 
-    console.error(error);
+    // A failed code exchange throws a GaxiosError whose request config holds
+    // the authorization code, the PKCE verifier and the client secret. Logging
+    // the raw error would disclose all three, so only safe diagnostics are
+    // recorded here (RFC-001 §13.2).
+    console.error(
+      "[gmail-callback] Failed to exchange code",
+      describeGmailError(error),
+    );
 
     return res.status(500).json({
       success: false,

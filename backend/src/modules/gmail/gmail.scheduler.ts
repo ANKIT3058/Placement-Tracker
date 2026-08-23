@@ -1,6 +1,7 @@
 import { getAllGmailAccounts } from "./gmail.repository.js";
 import { syncGmailAccount } from "./gmail.sync.service.js";
 import { GMAIL_SYNC_INTERVAL_MS } from "../../shared/constants/config.js";
+import { describeGmailError } from "./gmail.errors.js";
 
 // Guards against overlapping runs when a sync cycle outlasts the interval.
 let isRunning = false;
@@ -44,9 +45,12 @@ const runSyncCycle = async (): Promise<void> => {
       } catch (error) {
         failed += 1;
 
+        // Safe diagnostics only. This is the path that repeats every cycle, so
+        // a raw GaxiosError here would rewrite the mailbox's refresh token into
+        // the logs indefinitely (RFC-001 §13.2).
         console.error(
           `[gmail-scheduler] Failed to sync account ${account.email}`,
-          error,
+          describeGmailError(error),
         );
       }
     }

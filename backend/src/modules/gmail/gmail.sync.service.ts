@@ -12,6 +12,7 @@ import {
 import { enqueueEmailProcessing } from "../email/email.producer.js";
 import { updateHistoryId, getGmailAccountsByUser } from "./gmail.repository.js";
 import type { TenantContext } from "../auth/tenant-context.js";
+import { describeGmailError } from "./gmail.errors.js";
 
 export type SyncMessageResult =
   | { status: "duplicate"; emailId: number }
@@ -118,7 +119,13 @@ const processMessages = async (
       }
     } catch (error) {
       failed += 1;
-      console.error(`Failed to sync message ${messageId}`, error);
+      // Safe diagnostics only: a Gmail refresh failure arrives here as a
+      // GaxiosError carrying the mailbox's credentials in its request config,
+      // and logging the raw error would print them (RFC-001 §13.2).
+      console.error(
+        `Failed to sync message ${messageId}`,
+        describeGmailError(error),
+      );
     }
   }
 
@@ -239,9 +246,12 @@ export const syncUserMailboxes = async (
 
       const message = error instanceof Error ? error.message : "Unknown error";
 
+      // The raw error is never logged — see `describeGmailError`. The mailbox,
+      // the user and Google's own reason survive, which is what makes a
+      // revoked mailbox diagnosable without disclosing its refresh token.
       console.error(
         `[gmail-sync] Failed to sync mailbox ${account.email} for user ${context.userId}`,
-        error,
+        describeGmailError(error),
       );
 
       mailboxes.push({ email: account.email, status: "failed", error: message });

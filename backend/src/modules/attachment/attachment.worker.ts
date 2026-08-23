@@ -4,6 +4,7 @@ import { redis } from "../../infrastructure/redis/redis.js";
 import { QUEUE_NAMES } from "../../shared/constants/queue.constants.js";
 import { documentProcessingService } from "./document-processing.service.js";
 import type { AttachmentJobData } from "./attachment.types.js";
+import { describeGmailError } from "../gmail/gmail.errors.js";
 
 // Standalone worker process (run via `npm run worker:attachment`), mirroring
 // the email worker. Today it ONLY downloads and stores files — no parsing, no
@@ -34,5 +35,8 @@ worker.on("completed", (job) => {
 });
 
 worker.on("failed", (job, err) => {
-  console.error(`Attachment job ${job?.id} failed`, err);
+  // Attachment downloads call Gmail, so this handler can receive a
+  // credential-bearing GaxiosError. Reduced to safe diagnostics for the same
+  // reason the sync paths are (RFC-001 §13.2).
+  console.error(`Attachment job ${job?.id} failed`, describeGmailError(err));
 });
