@@ -4,11 +4,50 @@ import type { Credentials } from "google-auth-library";
 import type { AttachmentMetadata } from "../attachment/attachment.types.js";
 import type { GoogleIdentity } from "../user/user.types.js";
 
-export const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI,
-);
+// One client per PROCESS for the OAuth flow itself; one client per OPERATION
+// for anything that touches a mailbox.
+//
+// That split is the whole of PR-8D. `setCredentials` replaces a client's
+// credentials wholesale, so a single shared client is shared MUTABLE state, and
+// this process runs mailbox work concurrently — the Gmail scheduler lives in the
+// API process alongside request handling, so a background sync and a
+// `POST /gmail/sync` genuinely overlap.
+//
+// Five of the six mailbox helpers survived that only by accident: they issue one
+// API call, and google-auth-library happens to capture the credential object
+// synchronously before its first await. That is an implementation detail, not a
+// documented guarantee. `getHistoryChanges` did not survive it at all — it set
+// credentials once and then paginated, so every page after the first re-read
+// whatever the shared client held by then and could walk a different mailbox.
+//
+// Giving each operation its own client removes the shared state instead of
+// timing around it. No other operation can reach an operation's client, so no
+// interleaving can cross their credentials.
+const createOAuthClient = () =>
+  new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI,
+  );
+
+// The shared client, used only by the three operations that act as THIS
+// APPLICATION rather than as a user: `generateAuthUrl`, `getTokens` and
+// `verifyGoogleIdToken`. They need the client id, secret and redirect URI, and
+// never a user's mailbox credentials. It must never hold a refresh token — a
+// mailbox operation that mutated it would restore the state this PR removes.
+export const oauth2Client = createOAuthClient();
+
+// Every mailbox call goes through here. Building the Gmail service in the same
+// helper that builds the client is deliberate: it leaves no way to pair a fresh
+// client with the shared one by accident, which is the single mistake that would
+// silently reintroduce the vulnerability.
+const gmailFor = (credentials: Credentials) => {
+  const client = createOAuthClient();
+
+  client.setCredentials(credentials);
+
+  return google.gmail({ version: "v1", auth: client });
+};
 
 // The only issuers Google signs ID tokens as. Checked explicitly even though
 // google-auth-library also validates it, because RFC-001 §10.1 enumerates
@@ -110,12 +149,7 @@ export const verifyGoogleIdToken = async (
 };
 
 export const getGmailAddress = async (tokens: Credentials) => {
-  oauth2Client.setCredentials(tokens);
-
-  const gmail = google.gmail({
-    version: "v1",
-    auth: oauth2Client,
-  });
+  const gmail = gmailFor(tokens);
 
   const profile = await gmail.users.getProfile({
     userId: "me",
@@ -125,14 +159,7 @@ export const getGmailAddress = async (tokens: Credentials) => {
 };
 
 export const getRecentMessages = async (refreshToken: string) => {
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  const gmail = google.gmail({
-    version: "v1",
-    auth: oauth2Client,
-  });
+  const gmail = gmailFor({ refresh_token: refreshToken });
 
   const response = await gmail.users.messages.list({
     userId: "me",
@@ -146,14 +173,7 @@ export const getMessageDetails = async (
   refreshToken: string,
   messageId: string,
 ) => {
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  const gmail = google.gmail({
-    version: "v1",
-    auth: oauth2Client,
-  });
+  const gmail = gmailFor({ refresh_token: refreshToken });
 
   const response = await gmail.users.messages.get({
     userId: "me",
@@ -166,14 +186,7 @@ export const getMessageDetails = async (
 export const getLatestHistoryId = async (
   refreshToken: string,
 ): Promise<string> => {
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  const gmail = google.gmail({
-    version: "v1",
-    auth: oauth2Client,
-  });
+  const gmail = gmailFor({ refresh_token: refreshToken });
 
   const profile = await gmail.users.getProfile({
     userId: "me",
@@ -192,14 +205,7 @@ export const getHistoryChanges = async (
   refreshToken: string,
   startHistoryId: string,
 ): Promise<{ messageIds: string[]; latestHistoryId: string }> => {
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  const gmail = google.gmail({
-    version: "v1",
-    auth: oauth2Client,
-  });
+  const gmail = gmailFor({ refresh_token: refreshToken });
 
   const messageIds = new Set<string>();
   let latestHistoryId = startHistoryId;
@@ -360,14 +366,7 @@ export const getAttachmentData = async (
   messageId: string,
   attachmentId: string,
 ): Promise<Buffer> => {
-  oauth2Client.setCredentials({
-    refresh_token: refreshToken,
-  });
-
-  const gmail = google.gmail({
-    version: "v1",
-    auth: oauth2Client,
-  });
+  const gmail = gmailFor({ refresh_token: refreshToken });
 
   const response = await gmail.users.messages.attachments.get({
     userId: "me",
