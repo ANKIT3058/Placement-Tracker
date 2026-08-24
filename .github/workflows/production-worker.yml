@@ -137,3 +137,82 @@ jobs:
           REDIS_URL: ${{ secrets.REDIS_URL }}
           WORKER_EXIT_WHEN_DRAINED: 'true'
         run: node dist/src/workers/email.worker.js
+
+      # TEMPORARY — REMOVE AFTER THIS VERIFICATION RUN.
+      #
+      # Read-only confirmation of the queue's final state. Steps run in order
+      # and a failed step ends the job, so this cannot execute unless "Drain the
+      # queue" above exited 0 — that exit is itself the worker's own statement
+      # that the queue was empty and its graceful shutdown completed, so there
+      # is no mid-drain state this can observe.
+      #
+      # Deliberately NOT `queue.getJobCounts()`. BullMQ's getCounts Lua script
+      # RPOPs the trailing marker off the wait/paused lists
+      # (node_modules/bullmq/dist/cjs/commands/getCounts-1.lua, line 21) — a
+      # write. Nothing here constructs a Queue, Worker or Job; only PING, LLEN,
+      # LINDEX and ZCARD touch the keys, and all four are read-only.
+      #
+      # DATABASE_URL is deliberately absent: this step has no business reaching
+      # the database. The script is piped to node on stdin rather than written
+      # to a file so the runner's checkout is left untouched; `require` still
+      # resolves against backend/node_modules because stdin scripts resolve
+      # from the working directory.
+      - name: Verify queue state (temporary, read-only)
+        env:
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: |
+          node <<'SCRIPT'
+          const { Redis } = require("ioredis");
+
+          const PREFIX = "bull:email-processing";
+
+          // Bounded on every axis. The application's client sets
+          // maxRetriesPerRequest: null (retry forever), which is correct for a
+          // worker and wrong for a check that must fail rather than hang.
+          const redis = new Redis(process.env.REDIS_URL, {
+            lazyConnect: true,
+            connectTimeout: 10000,
+            commandTimeout: 10000,
+            maxRetriesPerRequest: 1,
+            retryStrategy: () => null,
+          });
+
+          // BullMQ v5 keeps a trailing "marker" entry (prefixed "0:") on the
+          // wait and paused lists which is not a job, so LLEN alone
+          // over-counts by one. LINDEX reads it without removing it.
+          const listCount = async (key) => {
+            const length = await redis.llen(key);
+            if (length === 0) return 0;
+            const last = await redis.lindex(key, -1);
+            return typeof last === "string" && last.startsWith("0:")
+              ? length - 1
+              : length;
+          };
+
+          const main = async () => {
+            await redis.connect();
+            await redis.ping();
+
+            const counts = {
+              waiting: await listCount(`${PREFIX}:wait`),
+              active: await redis.llen(`${PREFIX}:active`),
+              completed: await redis.zcard(`${PREFIX}:completed`),
+              failed: await redis.zcard(`${PREFIX}:failed`),
+              delayed: await redis.zcard(`${PREFIX}:delayed`),
+              paused: await listCount(`${PREFIX}:paused`),
+            };
+
+            console.log("email-processing queue state (read-only):");
+            for (const [state, count] of Object.entries(counts)) {
+              console.log(`  ${state}: ${count}`);
+            }
+          };
+
+          main()
+            .then(() => redis.quit())
+            .catch((error) => {
+              console.error(`Queue verification failed: ${error.message}`);
+              redis.disconnect();
+              process.exit(1);
+            });
+          SCRIPT
