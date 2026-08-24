@@ -7,6 +7,18 @@ import { getEmailById } from "../modules/email/email.repository.js";
 import type { EmailJobData } from "../modules/email/email.types.js";
 import type { OwnershipContext } from "../modules/auth/tenant-context.js";
 import { Prisma } from "../../generated/prisma/client.js";
+import { emailQueue } from "../infrastructure/queue/queues.js";
+
+// BATCH MODE (PR-9K).
+//
+// Off by default, and off for anything other than the exact string "true", so a
+// missing, empty or mistyped value leaves this process the permanent worker it
+// has always been. Read once here rather than at each drain: the mode is a
+// property of the run, and re-reading it would let a mutated environment change
+// the process's lifecycle halfway through.
+//
+// Matches the codebase's existing boolean-env convention (extraction.service.ts).
+const exitWhenDrained = process.env.WORKER_EXIT_WHEN_DRAINED === "true";
 
 const worker = new Worker(
   QUEUE_NAMES.EMAIL_PROCESSING,
@@ -82,18 +94,21 @@ worker.on("failed", (job, err) => {
 // waits out `lockDuration` (30s by default), the stalled checker returns the
 // job to `wait`, and the job runs again from the top.
 //
-// That replay is not free. `createExtraction` has no unique constraint, so every
-// interrupted job costs a duplicate EmailExtraction row — and because
-// `maxStalledCount` defaults to 1, a job interrupted twice is failed
-// permanently and silently. Deploying is itself the event that triggers this,
-// which is why it is worth closing before the worker first runs in production.
+// That replay is no longer unsafe: PR-9G added a unique constraint on
+// (emailId, userId) and made `createExtraction` an upsert, so a re-run rewrites
+// the one extraction row instead of appending a duplicate. It is still not
+// free. The job redoes the entire extraction — including the paid AI call when
+// `USE_AI=true` — and because `maxStalledCount` defaults to 1, a job
+// interrupted twice is failed permanently and silently. Deploying is itself the
+// event that triggers this, which is why it is worth closing before the worker
+// first runs in production.
 //
 // `close()` and never `close(true)`. The forced variant abandons the running
 // job, which is the precise outcome this exists to prevent; it would satisfy
 // "the worker shuts down" while making the failure mode worse.
 let shuttingDown: Promise<void> | null = null;
 
-const shutdown = (signal: NodeJS.Signals): Promise<void> => {
+const shutdown = (reason: string): Promise<void> => {
   // A host may send SIGTERM and then be interrupted, or a terminal may send
   // SIGINT while a SIGTERM drain is already running. Returning the in-flight
   // promise rather than starting a second one keeps two `close()` calls off the
@@ -104,7 +119,7 @@ const shutdown = (signal: NodeJS.Signals): Promise<void> => {
   }
 
   shuttingDown = (async () => {
-    console.log(`Received ${signal}, shutting down worker...`);
+    console.log(`${reason}, shutting down worker...`);
 
     try {
       // Stops accepting new jobs, then waits for the active one to finish.
@@ -143,9 +158,88 @@ const shutdown = (signal: NodeJS.Signals): Promise<void> => {
 };
 
 process.on("SIGTERM", () => {
-  void shutdown("SIGTERM");
+  void shutdown("Received SIGTERM");
 });
 
 process.on("SIGINT", () => {
-  void shutdown("SIGINT");
+  void shutdown("Received SIGINT");
+});
+
+// DRAIN-AND-EXIT (PR-9K).
+//
+// The third way this process can stop, and the only one it chooses for itself.
+// A scheduled runtime gives a job a wall-clock budget rather than a lifetime, so
+// a worker that idles on an empty queue until it is killed spends that budget
+// doing nothing. In batch mode the worker instead decides it is finished.
+//
+// WHY THE EVENT ALONE IS NOT ENOUGH.
+//
+// BullMQ emits `drained` when a fetch found nothing *immediately available* —
+// it is a statement about the wait list, not about the queue. A job that fails
+// with attempts remaining is moved to the DELAYED set by `moveToFailed`, and if
+// nothing else is waiting the very next thing the worker does is emit `drained`.
+// Exiting on the event by itself would therefore abandon a pending retry, which
+// is the precise failure this mode must not introduce.
+//
+// So the event is the trigger and `getJobCounts` is the decision. One Redis
+// round trip — `getCounts` is a single Lua script — asked only at the moment
+// there is something worth asking about, which is why this needs no polling
+// timer.
+//
+// The six types are named explicitly. `getJobCounts()` with no arguments returns
+// every type including `completed` and `failed`, and with `removeOnFail: false`
+// the failed set is permanent: counting it would mean the queue is never drained
+// and this process never exits.
+//
+// `active` is counted even though this worker runs at concurrency 1 and cannot
+// be holding a job when `drained` fires. It guards the OTHER case: a previous
+// run killed without draining leaves its job in `active` with an expired lock
+// until the stalled checker returns it to `wait`, and a check that ignored
+// `active` would exit and orphan it until the next scheduled run.
+//
+// A job arriving between the counts coming back zero and the close completing
+// is not handled, because it cannot be: the API service is a live producer and
+// no lock closes that window without making this a permanent worker again. It
+// costs nothing — the job is durable in Redis and the producer's deterministic
+// jobId keeps it from being enqueued twice — so it is simply picked up by the
+// next run.
+const onDrained = async (): Promise<void> => {
+  if (!exitWhenDrained) {
+    return;
+  }
+
+  try {
+    const counts = await emailQueue.getJobCounts(
+      "waiting",
+      "active",
+      "delayed",
+      "paused",
+      "prioritized",
+      "waiting-children",
+    );
+
+    const remaining = Object.values(counts).reduce(
+      (total, count) => total + count,
+      0,
+    );
+
+    if (remaining > 0) {
+      // Work is still outstanding — a retry waiting out its backoff, or a job
+      // recovered from a previous run. Nothing to do: fetching any job clears
+      // BullMQ's internal `drained` flag, so the next true drain emits again
+      // and this runs once more.
+      return;
+    }
+
+    await shutdown("Queue email-processing drained");
+  } catch (error) {
+    // Redis refused the count. Crashing here would kill the process outside the
+    // graceful path, abandoning any job the worker still holds — strictly worse
+    // than staying up and letting the runtime's own timeout bound the run.
+    console.error("Drain check failed", error);
+  }
+};
+
+worker.on("drained", () => {
+  void onDrained();
 });
