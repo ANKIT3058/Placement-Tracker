@@ -57,10 +57,18 @@ jest.mock("../../../lib/prisma", () => ({
     user: { findUnique: jest.fn(async () => ACTIVE_USER) },
     event: {
       findMany: jest.fn(async () => []),
-      // Two callers, two answers. `createEvent` dedupes on eventKey and returns
-      // early if it finds one, which would mean `create` never runs and the
-      // POST /event tests would pass for the wrong reason; the manual-update
-      // path looks up by id and must find a row.
+      // Two callers, two answers — and since the race-safe fix they reach the
+      // client through two different methods.
+      //
+      // `createEvent` dedupes through the composite `(userId, eventKey)` unique
+      // index, so it calls `findUnique` with a `userId_eventKey` selector. It
+      // must MISS: a hit makes it return the existing Event early, `create`
+      // never runs, and the POST /event tests would pass for the wrong reason.
+      //
+      // The manual-update path looks a row up by id with `findFirst` and must
+      // FIND one, or PATCH answers 404. Its `where` carries no `eventKey`, so
+      // the discriminator below already returns the row for it.
+      findUnique: jest.fn(async () => null),
       findFirst: jest.fn(async ({ where }: any) =>
         where?.eventKey ? null : { id: 10, userId: 1 },
       ),
