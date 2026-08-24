@@ -582,11 +582,13 @@ The consolidated audit. Each item states what the architecture asserts, what the
 | **G-3** | Duplicates are the tolerable failure | No detection, no merge tooling; users find them | **Gap** |
 | **G-4** | Every accepted revision is recorded | Manual confirmation writes no history | **Gap — see `EventUpdate.md`** |
 | **G-5** | One message may describe several activities | Extraction is instructed to select the single most important; remaining rounds are discarded | **Gap — known and documented as future scope** |
-| **G-6** | Documents are a second source of event-affecting facts entering at the same adjudication boundary | The document-intelligence layer — classification, event-information and participant-information extraction — is **never invoked from any path**. Attachment processing terminates at download, parse and persist | **Gap — capability built, entirely unwired** |
+| **G-6** | Documents are a second source of event-affecting facts entering at the same adjudication boundary | The document-intelligence layer is now **invoked and persisted** (G-6.3): attachment processing classifies and extracts after parsing, and writes the result to `DocumentIntelligence`. What it produces still reaches **no consumer** — `eventInformation` is stored, never adjudicated, so documents do not affect any Event | **Partially closed — understood and stored; adjudication boundary still not entered** |
 
 Two clarifications, since earlier handbook documents describe the intended shape:
 
-`Event.md` states that document intelligence "enters at the same adjudication boundary as email — which is the test that the boundary was drawn correctly." That statement describes **intended architecture**. As of this document, **G-6** applies: it does not currently enter at all. The boundary is drawn to accept it; nothing is sent through it.
+`Event.md` states that document intelligence "enters at the same adjudication boundary as email — which is the test that the boundary was drawn correctly." That statement still describes **intended architecture**. G-6.3 wired the layer into attachment processing and persists its output, so the capability is no longer inert — but the boundary itself is still not entered. `eventInformation` is written to `DocumentIntelligence` and read by nothing; no document has ever revised an Event. The boundary is drawn to accept it; nothing is sent through it yet.
+
+What remains of **G-6** is therefore exactly one step: routing a document's `eventInformation` into the same adjudication path an email observation takes. That step is deliberately separate, because it is the first time a document could change an Event, and it inherits every question this subsystem already answers for email — identity, confidence, recognition tier, and what a document's confidence even means relative to an extraction's.
 
 `Event.md`'s decision state machine presents the trust gate as preceding recognition. That is accurate as a description of **authority** — an untrusted observation never reaches an existing Event. In execution, recognition runs first and its result is discarded on the review path, which is the wasteful shape **D-3** describes.
 
@@ -604,7 +606,8 @@ Two clarifications, since earlier handbook documents describe the intended shape
                                        Review ──► Frontend
                                        (human)    (consumes)
 
-   Document Intelligence ┈┈┈┈┈┈► (intended; not wired — G-6)
+   Document Intelligence ──► DocumentIntelligence (stored)
+                         ┈┈┈► (adjudication boundary: still not entered — G-6)
 ```
 
 **Gmail Sync** delivers evidence and knows nothing of Events. Its contract is durable capture; it never reasons. Its failure modes are independent — a message lost in ingestion is invisible here, which is why that subsystem's drop path matters to this one.
@@ -617,7 +620,7 @@ Two clarifications, since earlier handbook documents describe the intended shape
 
 **Frontend** consumes outcomes: the timeline reflects accepted revisions, the review queue reflects deferred decisions. It is a pure consumer, and its correction path is the only human input this subsystem accepts.
 
-**Document Intelligence** is the intended second source. Its output type is deliberately shaped as event-affecting facts, so it is designed to enter at this boundary. It does not yet (**G-6**).
+**Document Intelligence** is the intended second source. Its output type is deliberately shaped as event-affecting facts, so it is designed to enter at this boundary. Since G-6.3 it runs and its output is persisted, but it still does not enter: this subsystem has never received a document-derived observation (**G-6**).
 
 ---
 

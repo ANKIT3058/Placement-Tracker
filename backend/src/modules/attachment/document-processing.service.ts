@@ -18,6 +18,15 @@ import {
   markParsingFailed,
 } from "./attachment.repository.js";
 import { ATTACHMENT_STATUS } from "./attachment.types.js";
+// Imported from the concrete modules rather than the document-intelligence
+// barrel: the barrel also re-exports the repository, so importing it here would
+// pull `lib/prisma` into this module's graph through a path that says nothing
+// about why. These two imports state exactly what this pipeline uses.
+import {
+  DocumentIntelligenceService,
+  documentIntelligenceService,
+} from "../document-intelligence/document-intelligence.service.js";
+import { saveDocumentIntelligence } from "../document-intelligence/document-intelligence.repository.js";
 import type { OwnershipContext } from "../auth/tenant-context.js";
 
 // An attachment loaded with its email + Gmail account (see getAttachmentById).
@@ -50,13 +59,16 @@ const buildStorageKey = (filename: string): string => {
 export class DocumentProcessingService {
   private readonly storage: StorageService;
   private readonly registry: ParserRegistry;
+  private readonly documentIntelligence: DocumentIntelligenceService;
 
   constructor(
     storage: StorageService = storageService,
     registry: ParserRegistry = parserRegistry,
+    documentIntelligence: DocumentIntelligenceService = documentIntelligenceService,
   ) {
     this.storage = storage;
     this.registry = registry;
+    this.documentIntelligence = documentIntelligence;
   }
 
   // Public API. Download the attachment bytes and persist the result, recording
@@ -186,6 +198,59 @@ export class DocumentProcessingService {
     }
 
     await updateParsedResult(owner, attachmentId, parsed, new Date());
+
+    // AFTER the parsed content is durable, never before (G-6.3). Understanding
+    // describes what a document means; it is derived from the parsed text and
+    // must not be able to exist for content that was never stored.
+    await this.runDocumentIntelligence(owner, attachmentId, parsed);
+  }
+
+  // Understand the parsed document and persist that understanding (G-6.3).
+  //
+  // This is the call site the Document Intelligence layer was built for: the
+  // classifier, extractors and assembler have existed and been tested since
+  // G-6.2, and the row they write to since G-6.1, but nothing invoked them —
+  // the gap the handbook records as G-6.
+  //
+  // GATED ON `USE_AI`, read per call rather than at module load, matching
+  // `extraction.service`. Anything other than the exact string "true" — a
+  // missing, empty or mistyped value — means no provider call and no row. That
+  // is not merely a cost control: the production worker deliberately ships no
+  // OPENAI_API_KEY, so an ungated call would fail on every attachment forever
+  // and log a failure for each one.
+  //
+  // FAIL-SOFT, and deliberately the ONLY place that policy lives. Neither
+  // collaborator applies it for itself: the three AI components are
+  // contractually no-throw and degrade to values, while
+  // `saveDocumentIntelligence` propagates database errors on purpose, so a
+  // failed write is not reported as a successful understanding. Catching here
+  // is what keeps either failure from taking down an attachment job whose
+  // download and parse both succeeded — the same isolation `parseAndPersist`
+  // already gives a parse failure, and for the same reason: retrying the job
+  // would re-download the file without making the failure any likelier to
+  // resolve.
+  //
+  // The log carries safe scalars only, never the error object (PR-9L): this
+  // path can surface provider errors whose payloads may carry request context.
+  private async runDocumentIntelligence(
+    owner: OwnershipContext,
+    attachmentId: number,
+    parsed: ParsedAttachment,
+  ): Promise<void> {
+    if (process.env.USE_AI !== "true") {
+      return;
+    }
+
+    try {
+      const insights = await this.documentIntelligence.analyze(parsed);
+
+      await saveDocumentIntelligence(owner, attachmentId, insights, new Date());
+    } catch (error) {
+      console.error("[attachment] Document intelligence failed", {
+        attachmentId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 

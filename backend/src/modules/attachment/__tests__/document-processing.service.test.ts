@@ -29,12 +29,30 @@ jest.mock("../../gmail/gmail.service", () => ({
   getAttachmentData: jest.fn(),
 }));
 
+// The Document Intelligence REPOSITORY is mocked at the module boundary,
+// exactly as `attachment.repository` above is: it is a free function, not an
+// injected collaborator, and this suite asserts which owner and payload reach
+// it rather than what it stores. Its upsert semantics are pinned in
+// document-intelligence.repository.test.ts and are not re-tested here.
+//
+// The SERVICE is deliberately NOT mocked at the module boundary — it is passed
+// in through the constructor below, the same seam `storage` and `registry` use.
+// Note also what is absent: no `ai/index` mock. The AI/extraction cycle was
+// fixed in its own commit, so the real module chain loads here; re-adding that
+// mock would hide a regression in the fix rather than isolate anything.
+jest.mock("../../document-intelligence/document-intelligence.repository", () => ({
+  saveDocumentIntelligence: jest.fn(),
+}));
+
 import { DocumentProcessingService } from "../document-processing.service";
 import * as repo from "../attachment.repository";
 import { getAttachmentData } from "../../gmail/gmail.service";
+import { saveDocumentIntelligence } from "../../document-intelligence/document-intelligence.repository";
 import type { StorageService } from "../storage/storage.interface";
 import type { AttachmentParser } from "../parsers/attachment-parser.interface";
 import type { ParserRegistry } from "../parsers/parser-registry";
+import type { DocumentIntelligenceService } from "../../document-intelligence/document-intelligence.service";
+import type { DocumentInsights } from "../../document-intelligence/document-insights.types";
 import type { OwnershipContext } from "../../auth/tenant-context";
 
 const ATTACHMENT_ID = 1;
@@ -72,10 +90,35 @@ const attachmentRow = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+// What `analyze` returns on the happy path. A participant document, so the
+// insights carry one optional slice and not the other — the shape the assembler
+// actually produces.
+const INSIGHTS: DocumentInsights = {
+  classification: "shortlist",
+  confidence: 0.91,
+  summary: "Shortlist for the Amazon OA.",
+  participantInformation: {
+    participants: [{ attributes: { roll_no: "21BCE1234" } }],
+  },
+};
+
 let storage: jest.Mocked<StorageService>;
 let parser: jest.Mocked<AttachmentParser>;
 let registry: ParserRegistry;
+let analyze: jest.Mock;
+let intelligence: DocumentIntelligenceService;
 let service: DocumentProcessingService;
+
+const savedIntelligence = saveDocumentIntelligence as jest.Mock;
+
+// `USE_AI` is process-wide, so it is captured once and restored after every
+// test. Leaking it would silently arm or disarm the gate for whatever runs
+// next — including the 58 pre-existing tests in this file, which assume it off.
+const ORIGINAL_USE_AI = process.env.USE_AI;
+
+const enableAI = () => {
+  process.env.USE_AI = "true";
+};
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -93,10 +136,21 @@ beforeEach(() => {
 
   registry = { findParser: jest.fn().mockReturnValue(parser) } as unknown as ParserRegistry;
 
+  analyze = jest.fn().mockResolvedValue(INSIGHTS);
+  intelligence = { analyze } as unknown as DocumentIntelligenceService;
+
   (getAttachmentData as jest.Mock).mockResolvedValue(Buffer.from("pdf-bytes"));
   mocked.getAttachmentById.mockResolvedValue(attachmentRow());
 
-  service = new DocumentProcessingService(storage, registry);
+  service = new DocumentProcessingService(storage, registry, intelligence);
+});
+
+afterEach(() => {
+  if (ORIGINAL_USE_AI === undefined) {
+    delete process.env.USE_AI;
+  } else {
+    process.env.USE_AI = ORIGINAL_USE_AI;
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -335,5 +389,233 @@ describe("existing processing behaviour is unchanged", () => {
 
     expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
     expect(mocked.markAttachmentFailed).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G-6.3 — Document Intelligence enters the attachment pipeline.
+//
+// The classifier, extractors and assembler have existed since G-6.2 and the row
+// they write to since G-6.1, but nothing invoked them: the handbook records that
+// as gap G-6, "capability built, entirely unwired". These tests pin the wiring
+// and, more importantly, its boundaries — that understanding never runs before
+// the parsed content is durable, never runs with AI disabled, and can never take
+// down an attachment job that already succeeded.
+// ---------------------------------------------------------------------------
+
+describe("document intelligence runs after the parse is persisted", () => {
+  // A. Happy path.
+  test("analyzes the parsed document and persists the insights", async () => {
+    enableAI();
+
+    await service.process(ATTACHMENT_ID);
+
+    // The EXACT object handed to updateParsedResult, not a copy: understanding
+    // must describe the content that was stored.
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(analyze).toHaveBeenCalledWith(PARSED);
+
+    expect(savedIntelligence).toHaveBeenCalledTimes(1);
+    expect(savedIntelligence).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+      INSIGHTS,
+      expect.any(Date),
+    );
+  });
+
+  // B. Ordering.
+  test("persists the parsed result BEFORE analyzing", async () => {
+    enableAI();
+
+    const order: string[] = [];
+    mocked.updateParsedResult.mockImplementation(async () => {
+      order.push("updateParsedResult");
+    });
+    analyze.mockImplementation(async () => {
+      order.push("analyze");
+      return INSIGHTS;
+    });
+    savedIntelligence.mockImplementation(async () => {
+      order.push("saveDocumentIntelligence");
+    });
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(order).toEqual([
+      "updateParsedResult",
+      "analyze",
+      "saveDocumentIntelligence",
+    ]);
+  });
+
+  // C. Parse failure.
+  test("does not analyze when parsing failed", async () => {
+    enableAI();
+    parser.parse.mockRejectedValue(new Error("corrupt pdf"));
+
+    await service.process(ATTACHMENT_ID);
+
+    // There is no parsed text to understand, and no parsed row to attach an
+    // understanding to.
+    expect(mocked.markParsingFailed).toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    expect(savedIntelligence).not.toHaveBeenCalled();
+  });
+
+  // D. No parser for the MIME type.
+  test("does not analyze when no parser handles the MIME type", async () => {
+    enableAI();
+    (registry.findParser as jest.Mock).mockReturnValue(undefined);
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    expect(savedIntelligence).not.toHaveBeenCalled();
+  });
+
+  // H. Ownership.
+  test.each([7, 42, 1234])(
+    "persists intelligence under the owner derived from the attachment (%i)",
+    async (persistedUserId) => {
+      enableAI();
+
+      mocked.getAttachmentById.mockResolvedValue(
+        attachmentRow({
+          userId: persistedUserId,
+          email: {
+            id: 10,
+            userId: persistedUserId,
+            gmailMessageId: "gmail-msg-1",
+            gmailAccount: {
+              id: 3,
+              userId: persistedUserId,
+              refreshToken: "refresh-token",
+            },
+          },
+        }),
+      );
+
+      await service.process(ATTACHMENT_ID);
+
+      // Same derivation, same object shape, same argument position as every
+      // other mutation in this pipeline.
+      expect(savedIntelligence).toHaveBeenCalledWith(
+        { userId: persistedUserId },
+        ATTACHMENT_ID,
+        INSIGHTS,
+        expect.any(Date),
+      );
+    },
+  );
+
+  // I. Replay.
+  test("a replay addresses the same row rather than a new one", async () => {
+    enableAI();
+
+    await service.process(ATTACHMENT_ID);
+    await service.process(ATTACHMENT_ID);
+
+    // Row-level convergence is the repository's guarantee, enforced by
+    // `@@unique([attachmentId, userId])` and pinned in its own suite. What the
+    // CALL SITE must guarantee is that a replay keeps addressing the same key —
+    // an implementation that derived a new identity per run would defeat the
+    // upsert without failing that suite.
+    expect(savedIntelligence).toHaveBeenCalledTimes(2);
+    expect(savedIntelligence.mock.calls[0][0]).toEqual(OWNER);
+    expect(savedIntelligence.mock.calls[0][1]).toBe(ATTACHMENT_ID);
+    expect(savedIntelligence.mock.calls[1][0]).toEqual(OWNER);
+    expect(savedIntelligence.mock.calls[1][1]).toBe(ATTACHMENT_ID);
+  });
+});
+
+describe("the USE_AI gate", () => {
+  // E. Disabled.
+  test.each([
+    ["unset", undefined],
+    ["false", "false"],
+    ["empty", ""],
+    ["True (wrong case)", "True"],
+    ["1", "1"],
+  ])(
+    "does not run intelligence when USE_AI is %s",
+    async (_label, value) => {
+      if (value === undefined) {
+        delete process.env.USE_AI;
+      } else {
+        process.env.USE_AI = value;
+      }
+
+      await service.process(ATTACHMENT_ID);
+
+      // Only the exact string "true" arms it. Anything else must cost nothing:
+      // no provider call, no row.
+      expect(analyze).not.toHaveBeenCalled();
+      expect(savedIntelligence).not.toHaveBeenCalled();
+    },
+  );
+
+  test("processing still completes normally with AI disabled", async () => {
+    delete process.env.USE_AI;
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
+    expect(mocked.updateParsedResult).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+      PARSED,
+      expect.any(Date),
+    );
+    expect(mocked.markAttachmentFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe("document intelligence failures are contained", () => {
+  // F. analyze throws.
+  test("an analyze failure leaves the attachment completed and parsed", async () => {
+    enableAI();
+    analyze.mockRejectedValue(new Error("provider exploded"));
+
+    await expect(service.process(ATTACHMENT_ID)).resolves.toBeUndefined();
+
+    expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
+    expect(mocked.updateParsedResult).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+      PARSED,
+      expect.any(Date),
+    );
+    // Nothing to persist, and the download lifecycle is untouched.
+    expect(savedIntelligence).not.toHaveBeenCalled();
+    expect(mocked.markAttachmentFailed).not.toHaveBeenCalled();
+    expect(mocked.markParsingFailed).not.toHaveBeenCalled();
+  });
+
+  // G. Persistence throws.
+  test("a persistence failure leaves the attachment completed and parsed", async () => {
+    enableAI();
+    savedIntelligence.mockRejectedValue(new Error("connection terminated"));
+
+    // The repository propagates database errors on purpose; containing them is
+    // this call site's job, and it is the only thing between a failed write and
+    // a failed attachment job.
+    await expect(service.process(ATTACHMENT_ID)).resolves.toBeUndefined();
+
+    expect(analyze).toHaveBeenCalledTimes(1);
+    expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
+    expect(mocked.updateParsedResult).toHaveBeenCalled();
+    expect(mocked.markAttachmentFailed).not.toHaveBeenCalled();
+    expect(mocked.markParsingFailed).not.toHaveBeenCalled();
+  });
+
+  test("a non-Error rejection is also contained", async () => {
+    enableAI();
+    analyze.mockRejectedValue("just a string");
+
+    await expect(service.process(ATTACHMENT_ID)).resolves.toBeUndefined();
+
+    expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
   });
 });
