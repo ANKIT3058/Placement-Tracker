@@ -191,8 +191,80 @@ model Attachment {
   updatedAt DateTime @updatedAt
 
   email Email @relation(fields: [emailId, userId], references: [id, userId], onDelete: Cascade)
+  // Singular and optional: an attachment yields at most one understanding,
+  // enforced by `@@unique([attachmentId, userId])` on the other side.
+  intelligence DocumentIntelligence?
 
+  // Composite-FK anchor, added for the same reason Email, Event and
+  // GmailAccount carry one: a child must be able to reference this row AND its
+  // owner together, so a child that disagrees with this row's owner is
+  // unrepresentable rather than merely incorrect (RFC-001 §12.3). Attachment
+  // lacked it only because it had no children until now.
+  @@unique([id, userId])
   @@index([emailId])
+}
+
+// What a parsed Attachment MEANS, as opposed to what it contains.
+//
+// The parsing columns on Attachment (`text`, `parsedData`, `parsedMetadata`)
+// record what a file says; this records the Document Intelligence layer's
+// understanding of it — its classification, and the event/participant facts it
+// revealed. Kept as its own table rather than more columns on Attachment
+// because `participantInformation` for a large shortlist is sizeable and
+// Attachment is a hot row: it is read on every processing job and in
+// per-email list queries, and Prisma selects every column by default.
+//
+// One row per attachment, enforced by the DATABASE via
+// `@@unique([attachmentId, userId])` — the same guarantee, for the same reason,
+// that EmailExtraction gets from `@@unique([emailId, userId])`. Attachment
+// processing is replayed whenever the worker dies holding its BullMQ lock, so
+// the write is an upsert resolved on that key and the constraint is what makes
+// a replay converge instead of duplicating.
+//
+// Composite with `userId` rather than keyed on `attachmentId` alone: the
+// relation to Attachment is itself composite, and keyed on the attachment alone
+// one tenant's replay could address another tenant's row.
+model DocumentIntelligence {
+  id Int @id @default(autoincrement())
+
+  attachmentId Int
+
+  // See Attachment.userId — same pattern, same reason: the tenant key is a
+  // plain column, and enforcement runs through the composite parent relation.
+  userId Int
+
+  // The DocumentType the classifier decided on. Stored as the string value
+  // ("shortlist"), not an enum: the vocabulary lives in document-type.ts and a
+  // database enum would have to be migrated in lockstep with it. "unknown" is a
+  // legitimate, expected value — an unclassifiable document is a normal outcome.
+  classification String
+
+  // How trustworthy that decision is, 0..1. Always 0 when classification failed
+  // or degraded.
+  classificationConfidence Float
+
+  // Human-readable synopsis, independent of classification. Empty on failure.
+  summary String
+
+  // The two optional slices of DocumentInsights, absent when the document
+  // carried nothing of that kind. NULL means "nothing of this kind was
+  // understood" — never "empty". Stored as JSON because participants are
+  // deliberately an open bag of document-supplied labels
+  // (participant-information.types.ts); normalising them into rows is the job of
+  // the later entity-resolution layer, not of this one.
+  eventInformation       Json?
+  participantInformation Json?
+
+  // When the understanding that produced this row was completed. Distinct from
+  // `createdAt`: a replay rewrites the row and moves `extractedAt` forward,
+  // while `createdAt` records when the attachment was first understood.
+  extractedAt DateTime
+
+  createdAt DateTime @default(now())
+
+  attachment Attachment @relation(fields: [attachmentId, userId], references: [id, userId], onDelete: Cascade)
+
+  @@unique([attachmentId, userId])
 }
 
 model EmailExtraction {
