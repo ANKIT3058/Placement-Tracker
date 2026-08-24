@@ -54,7 +54,7 @@ const worker = new Worker(
     console.log({
       jobId: job.id,
       queue: job.queueName,
-      emailSubject: email.subject,
+      emailId: email.id,
       userId: owner.userId,
       attempts: job.attemptsMade,
     });
@@ -82,8 +82,29 @@ worker.on("completed", (job) => {
   console.log(`Job ${job.id} completed`);
 });
 
+// LOG REDACTION (PR-9L).
+//
+// Safe scalars only, and never the error object itself. This repository is
+// public and the worker is intended to run in GitHub Actions, whose logs on a
+// public repo are readable by anyone with the URL and no login.
+//
+// A dumped error carries whatever the thrower hung off it: gaxios attaches the
+// full request config and headers, and a database driver error can carry the
+// failing statement and its parameters. `message` is the one field every error
+// is contractually required to have and the only one whose contents are
+// predictable enough to publish.
+//
+// The payload's `userId` is deliberately absent. It is an unverified claim
+// (RFC-001 §9.5), and the derived owner is not available here — the job may have
+// failed before it was ever read. `jobId` and `emailId` identify the work
+// without asserting anything about who owns it.
 worker.on("failed", (job, err) => {
-  console.error(`Job ${job?.id} failed`, err);
+  console.error("Job failed", {
+    jobId: job?.id,
+    emailId: (job?.data as EmailJobData | undefined)?.emailId,
+    attempts: job?.attemptsMade,
+    reason: err.message,
+  });
 });
 
 // GRACEFUL SHUTDOWN (PR-9B).
@@ -148,7 +169,9 @@ const shutdown = (reason: string): Promise<void> => {
       // awaited has completed. Nothing is left in flight to cut short.
       process.exit(0);
     } catch (error) {
-      console.error("Worker shutdown failed", error);
+      console.error("Worker shutdown failed", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
 
       process.exit(1);
     }
@@ -236,7 +259,9 @@ const onDrained = async (): Promise<void> => {
     // Redis refused the count. Crashing here would kill the process outside the
     // graceful path, abandoning any job the worker still holds — strictly worse
     // than staying up and letting the runtime's own timeout bound the run.
-    console.error("Drain check failed", error);
+    console.error("Drain check failed", {
+      reason: error instanceof Error ? error.message : String(error),
+    });
   }
 };
 
