@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { extractData } from "../email/email.parser.js";
 import {
   mergeExtraction,
@@ -9,23 +8,17 @@ import {
 import { computeConfidence } from "./confidence.utils.js";
 import { structuredCompletion, RetryPolicy } from "../ai/index.js";
 
-let client: OpenAI | null = null;
-
-// Lazily construct and memoize the single shared OpenAI client. Exported so
-// other AI features (e.g. the DocumentClassifier) reuse the exact same provider
-// instance and API-key handling instead of standing up a second client.
-export const getOpenAIClient = () => {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error("OPENAI_API_KEY not set");
-  }
-
-  if (!client) {
-    client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY,
-    });
-  }
-  return client;
-};
+// Re-exported, not redefined. The implementation moved to `ai/openai-client`
+// so that `ai/openai-provider` could stop importing this module — that import
+// closed a cycle (ai/index -> structured-completion -> openai-provider ->
+// extraction.service -> ai/index) which is harmless under ESM but breaks under
+// the CommonJS output ts-jest produces.
+//
+// The symbol stays exported from here on purpose: the document-intelligence
+// extractors import it from this path, and several test suites mock this module
+// to intercept it. Re-exporting keeps both working unchanged, and keeps the
+// memoised client a single instance — there is still exactly one definition.
+export { getOpenAIClient } from "../ai/openai-client.js";
 
 // The structured JSON shape the extraction prompt asks the model to return.
 // This is a compile-time assertion about the parsed JSON, not a runtime

@@ -1,5 +1,5 @@
 import { APIError } from "openai";
-import { getOpenAIClient } from "../extraction/extraction.service.js";
+import { getOpenAIClient } from "./openai-client.js";
 import type { AIProvider, CompletionRequest } from "./ai-provider.interface.js";
 import { EmptyResponseError, ProviderError } from "./ai-errors.js";
 
