@@ -364,3 +364,12 @@ describe("sweeps do not overlap", () => {
     expect(mockReconcile).toHaveBeenCalledTimes(2);
   });
 });
+
+// Marks this file as a TypeScript module — see the matching note in
+// `email.reconciliation.test.ts`.
+//
+// Without a top-level `import` or `export` TypeScript treats this file as a
+// global script, so its top-level `NOW` collided with the identically-named
+// declaration in that sibling suite (TS2451). `export {}` scopes the
+// declarations here to this file and changes nothing at runtime.
+export {};

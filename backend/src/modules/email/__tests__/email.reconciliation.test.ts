@@ -316,3 +316,18 @@ describe("a manually ingested email is recoverable", () => {
     expect(enqueuedIds()).toEqual([orphan.id]);
   });
 });
+
+// Marks this file as a TypeScript module.
+//
+// It has no top-level `import` or `export`, so TypeScript otherwise treats it as
+// a global script and its top-level declarations — `NOW`, `CUTOFF` — land in the
+// global scope. `email.scheduler.test.ts` is in the same position and declares
+// its own `NOW`, so the two collided: ts-jest failed to compile with TS2451
+// ("Cannot redeclare block-scoped variable 'NOW'") and this suite failed to
+// load. It stayed invisible under a warm cache, because ts-jest re-reports
+// diagnostics only when it re-checks the file.
+//
+// Nothing else changes. There are no top-level imports to reorder, `jest.mock`
+// hoisting is unaffected, and the lazy `require()` calls inside the tests behave
+// exactly as before — this only scopes the declarations to this file.
+export {};
