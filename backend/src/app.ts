@@ -1,6 +1,7 @@
 import express from "express";
 import eventRoutes from "./modules/event/event.routes.js";
 import emailRoutes from "./modules/email/email.routes.js";
+import userRoutes from "./modules/user/user.routes.js";
 import gmailRoutes from "./modules/gmail/gmail.route.js";
 import authRoutes from "./modules/auth/auth.routes.js";
 import { sessionMiddleware } from "./modules/auth/session.config.js";
@@ -74,5 +75,6 @@ app.use("/auth", authRoutes);
 app.use("/gmail", gmailRoutes);
 app.use("/event", eventRoutes);
 app.use("/email", emailRoutes);
+app.use("/user", userRoutes);
 
 export default app;

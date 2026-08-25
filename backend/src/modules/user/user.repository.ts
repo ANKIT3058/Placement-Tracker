@@ -45,3 +45,53 @@ export const upsertUserFromGoogleIdentity = async (identity: GoogleIdentity) => 
     update: profile,
   });
 };
+
+// The caller's StudentProfile, addressed by the owner's internal id (G-8.2).
+//
+// Keyed on `userId`, never on `StudentProfile.id`. The profile row's own id is
+// not an addressing mechanism and is never accepted from a request: the only way
+// to reach a profile is to already be the user it belongs to. `userId` is unique,
+// so this returns at most one row.
+//
+// A user with no profile row is a normal account, so `null` here is an ordinary
+// outcome and not an error.
+export const getStudentProfileByUserId = async (userId: number) => {
+  return prisma.studentProfile.findUnique({
+    where: {
+      userId,
+    },
+  });
+};
+
+// Set or clear the caller's registration number, creating the profile row on
+// first use (G-8.2).
+//
+// An upsert rather than a read followed by a conditional write, matching
+// `upsertUserFromGoogleIdentity` above and for the same reason: two concurrent
+// requests would both miss on the read and the second insert would fail on the
+// unique constraint. One statement resolves that.
+//
+// `userId` is supplied by the caller's session, never by the request body, so
+// the WHERE predicate here is the ownership boundary — there is no id a caller
+// could substitute to address someone else's row.
+//
+// A P2002 on `registrationNumber` propagates deliberately. It means the number
+// belongs to another user, which the service turns into a refusal; swallowing it
+// here would silently drop the write.
+export const upsertStudentProfileRegistrationNumber = async (
+  userId: number,
+  registrationNumber: string | null,
+) => {
+  return prisma.studentProfile.upsert({
+    where: {
+      userId,
+    },
+    create: {
+      userId,
+      registrationNumber,
+    },
+    update: {
+      registrationNumber,
+    },
+  });
+};
