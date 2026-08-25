@@ -326,6 +326,12 @@ without a shadow database and without reset. `migrate dev` is for local schema
 development only; it replays the entire chain against a temporary shadow
 database. See [`docs/runbooks/migrations.md`](runbooks/migrations.md).
 
+Two things that section assumes, and which an incident during G-8 showed cannot
+be taken for granted: the schema must reach production **before** the code that
+needs it ([§4.7](#47-deployment-order--schema-before-code)), and a `P1001` from
+`migrate status` does not necessarily mean the database is down
+([§4.8](#48-when-migrate-cannot-reach-the-database-p1001)).
+
 ### 4.6 Health check
 
 ```bash
@@ -343,6 +349,132 @@ Server running on port 10000
 
 If you see `[session] SESSION_SECRET is unset — using an insecure development
 default`, then `NODE_ENV` is not `production`. Fix before proceeding.
+
+### 4.7 Deployment order — schema before code
+
+> **Never deploy application code that requires a database object before that
+> object exists in production.**
+
+Migrations are not run by the build (§4.5), so the two move independently and
+nothing enforces the ordering for you. Deploying code first does not fail
+loudly; it fails as a runtime error on whichever request touches the missing
+object.
+
+**What happened during G-8 (2026-08-25).** The `StudentProfile` feature was
+deployed — frontend and backend — while `20260825140000_add_student_profile` was
+still pending. Production had no `StudentProfile` table, so:
+
+```
+frontend + backend deployed
+     ↓
+StudentProfile table absent
+     ↓
+GET /user/profile → 500
+     ↓
+StudentProfileSection treats the failed request as "feature unavailable"
+     ↓
+the registration-number section is simply not on the page
+```
+
+The frontend code was correct. The database schema was behind the deployed
+application, and the symptom looked like a missing feature rather than a broken
+one.
+
+The exception in the Render logs named it exactly:
+
+```
+[user] Failed to read student profile {
+  userId: 1,
+  reason: 'Invalid `prisma.studentProfile.findUnique()` invocation:
+           The table `public.StudentProfile` does not exist in the current database.'
+}
+```
+
+**Practical ordering.** Apply the migration (§4.5), confirm it with
+`migrate status`, and only then deploy the code that depends on it. Additive
+migrations — a new table, a new nullable column — are safe to apply ahead of the
+deploy precisely because the running application does not yet reference them.
+
+> [!NOTE]
+> **Future consideration, not a change to make in a hurry.** The section hid
+> itself because it treats *any* failed load as "unavailable", which is right
+> for a `401` — the dashboard already reports sign-in state — but turns a `500`
+> into a silent absence. Distinguishing "you are signed out" from "this is
+> broken" would have made this incident self-evident. Recorded here as an
+> observability question; the component is unchanged.
+
+### 4.8 When Migrate cannot reach the database (`P1001`)
+
+`prisma migrate status` and `migrate deploy` can fail with:
+
+```
+P1001: Can't reach database server at
+ep-<endpoint>.<region>.aws.neon.tech:5432
+```
+
+**This does not by itself mean the database is down.** During G-8 the database
+was healthy throughout: the application was serving traffic, and a plain Node
+`pg` client connected to the same host, database and credentials from the same
+machine that Migrate could not reach.
+
+**What was established.** The Neon hostname resolves to **both** IPv6 (`2406:…`)
+and IPv4 (`52.76.108.241`, `52.76.128.157`, `13.251.213.89`) addresses. On the
+affected Windows workstation, direct TCP tests to port 5432 showed IPv6 timing
+out and IPv4 connecting in ~150 ms. The local resolver returned the IPv6
+addresses first.
+
+That explains the split:
+
+| Path | Result | Why |
+|---|---|---|
+| Node `pg` | connects | Node ≥ 20 races both families and falls back to the reachable one |
+| Prisma Client | connects | goes through the `pg` driver adapter, so it inherits that behaviour |
+| Prisma Migrate | `P1001` | the native schema engine used the IPv6 address and timed out |
+
+> [!IMPORTANT]
+> **A successful `pg` connection is not proof that Migrate can reach the
+> database.** They take different network paths. Test with the actual command:
+> run `npx prisma migrate status` from the environment that will run the
+> migration, and only run `migrate deploy` once it succeeds.
+
+This was observed specifically on **Windows with Prisma 7.9.1**, whose Migrate
+path runs a native `schema-engine-windows.exe` separate from Node. It is not a
+general statement about Prisma and IPv6, and nothing here establishes one.
+
+**Diagnostic order.**
+
+1. Do not assume the database is down — check `/health` and the application logs
+   first.
+2. Resolve the hostname and note **both** A and AAAA records.
+3. Test TCP reachability to port 5432 for an address of each family.
+4. If IPv4 works and IPv6 does not, address selection is the likely cause.
+5. Run `npx prisma migrate status` from the environment that will apply the
+   migration.
+6. Only after that succeeds, run `npx prisma migrate deploy`.
+
+**Temporary workaround used.** A single hosts-file entry pinning the hostname to
+a reachable IPv4 address, followed by `ipconfig /flushdns`. `migrate status` then
+connected and listed the pending migrations, `migrate deploy` applied them, and
+`migrate status` reported *Database schema is up to date!*. **The entry was
+removed and DNS flushed again immediately afterwards.**
+
+> [!WARNING]
+> **The hosts-file entry is a workaround for one migration run, never a
+> configuration.** Neon's IP addresses can change, and a stale pin would send
+> the workstation to an address that no longer serves this database — failing
+> later, in a way that looks like something else. Remove it as soon as the
+> migration is applied. Prefer a machine or network where the address selection
+> problem does not arise.
+
+> [!NOTE]
+> **A CI workflow holding `DIRECT_DATABASE_URL` was considered and rejected.**
+> The unpooled credential can execute DDL, and the repository deliberately keeps
+> it out of GitHub — see the comment on the build step in
+> `.github/workflows/production-worker.yml`. Production migrations remain a
+> deliberate, human-run action from a workstation (§4.5). This incident did not
+> change that.
+
+---
 
 ---
 
