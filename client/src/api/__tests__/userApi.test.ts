@@ -13,7 +13,11 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
-import { getStudentProfile, updateStudentProfile } from "../userApi";
+import {
+  getStudentProfile,
+  updateStudentProfile,
+  getShortlistParticipation,
+} from "../userApi";
 
 /* A minimal stand-in for a fetch Response — only the members the client
    touches. Constructing a real Response would test the platform, not us. */
@@ -181,6 +185,100 @@ describe("updateStudentProfile", () => {
 
     await expect(updateStudentProfile("20231234")).rejects.toMatchObject({
       status: 500,
+    });
+  });
+});
+
+describe("getShortlistParticipation", () => {
+  const participationBody = (
+    participation: Record<string, unknown>,
+  ) => ({ success: true, participation });
+
+  it("reads the caller's own shortlists with no id in the URL", async () => {
+    mockFetch.mockResolvedValue(
+      respondWith(
+        200,
+        participationBody({
+          registrationNumber: "20231234",
+          shortlistsChecked: 0,
+          appearsOn: [],
+        }),
+      ),
+    );
+
+    await getShortlistParticipation();
+
+    const url = urlOf(mockFetch.mock.calls[0]);
+
+    // Session-addressed, like the profile calls. There is no
+    // `/user/1/shortlists` shape and no route to answer one.
+    expect(url).toMatch(/\/user\/shortlists$/);
+    expect(url).not.toMatch(/\/user\/\d+/);
+  });
+
+  it("issues no method, so the shared client treats it as a safe GET", async () => {
+    mockFetch.mockResolvedValue(
+      respondWith(
+        200,
+        participationBody({
+          registrationNumber: null,
+          shortlistsChecked: 0,
+          appearsOn: [],
+        }),
+      ),
+    );
+
+    await getShortlistParticipation();
+
+    expect(initOf(mockFetch.mock.calls[0])?.method).toBeUndefined();
+  });
+
+  it("unwraps the participation from the envelope", async () => {
+    mockFetch.mockResolvedValue(
+      respondWith(
+        200,
+        participationBody({
+          registrationNumber: "20231234",
+          shortlistsChecked: 3,
+          appearsOn: [{ attachmentId: 11 }, { attachmentId: 12 }],
+        }),
+      ),
+    );
+
+    await expect(getShortlistParticipation()).resolves.toEqual({
+      registrationNumber: "20231234",
+      shortlistsChecked: 3,
+      appearsOn: [{ attachmentId: 11 }, { attachmentId: 12 }],
+    });
+  });
+
+  it("carries the checked count, so an empty result stays distinguishable", async () => {
+    mockFetch.mockResolvedValue(
+      respondWith(
+        200,
+        participationBody({
+          registrationNumber: "20231234",
+          shortlistsChecked: 5,
+          appearsOn: [],
+        }),
+      ),
+    );
+
+    // "None of five" and "there were none" are different answers; the client
+    // must not flatten them into an empty list.
+    const result = await getShortlistParticipation();
+
+    expect(result.shortlistsChecked).toBe(5);
+    expect(result.appearsOn).toEqual([]);
+  });
+
+  it("rejects with the status when the server refuses", async () => {
+    mockFetch.mockResolvedValue(
+      respondWith(401, { success: false, message: "Authentication required" }),
+    );
+
+    await expect(getShortlistParticipation()).rejects.toMatchObject({
+      status: 401,
     });
   });
 });

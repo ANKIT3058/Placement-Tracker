@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   getStudentProfileController,
   updateStudentProfileController,
+  getShortlistParticipationController,
 } from "./user.controller.js";
 import { requireAuth } from "../auth/auth.middleware.js";
 import { requireCsrf } from "../auth/csrf.js";
@@ -20,5 +21,8 @@ router.use(requireAuth);
 // page cannot read `placement.csrf` to echo it, so it cannot reach it.
 router.get("/profile", getStudentProfileController);
 router.patch("/profile", requireCsrf, updateStudentProfileController);
+
+// A read, so no `requireCsrf` — the same reason GET /profile above has none.
+router.get("/shortlists", getShortlistParticipationController);
 
 export default router;

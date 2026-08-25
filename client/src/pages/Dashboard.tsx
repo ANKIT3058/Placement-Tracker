@@ -8,6 +8,7 @@ import EventDetailsDrawer from "../components/EventDetailsDrawer";
 import ReviewCard from "../components/ReviewCard";
 import EmailInput from "../components/EmailInput";
 import StudentProfileSection from "../components/StudentProfileSection";
+import ShortlistSection from "../components/ShortlistSection";
 import type { Event } from "../types/event";
 
 /* Stable keys for the placeholder cards. Three fills a desktop row
@@ -260,6 +261,14 @@ export default function Dashboard() {
               here adds no second error banner to a page that already reports
               what went wrong. */}
           {!isAuthenticationRequired(error) && <StudentProfileSection />}
+
+          {/* Reads the profile section's field indirectly: the server decides
+              whether there is a registration number to check with, and this
+              section explains all four outcomes rather than showing an empty
+              list for two different reasons. Hidden in the same
+              authentication-required state, and it hides itself when its own
+              load fails. */}
+          {!isAuthenticationRequired(error) && <ShortlistSection />}
 
           {loading ? (
             <section className="section" aria-busy="true">

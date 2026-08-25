@@ -71,3 +71,45 @@ export const updateStudentProfile = async (
 
   return result.profile;
 };
+
+/* Which of the caller's own shortlists list their registration number (G-8.4).
+ *
+ * A read, session-addressed like the profile calls above: no id is sent, and the
+ * server decides whose shortlists these are from the session alone.
+ *
+ * `appearsOn` carries attachment ids the caller already owns and nothing else.
+ * There is deliberately no participant data in this contract — a shortlist names
+ * other students, and the answer to "am I on it" does not require telling anyone
+ * who else is.
+ */
+export type ShortlistAppearance = {
+  attachmentId: number;
+};
+
+export type ShortlistParticipation = {
+  /* Echoed by the server so the caller can tell "you appear on none" apart from
+     "we could not look, because you have not set a number". Those are different
+     answers, and an empty `appearsOn` alone conflates them. */
+  registrationNumber: string | null;
+
+  /* How many of the caller's own shortlists were examined. Zero means there was
+     nothing to find; a positive number with an empty `appearsOn` means the
+     number genuinely did not appear. */
+  shortlistsChecked: number;
+
+  appearsOn: ShortlistAppearance[];
+};
+
+type ShortlistParticipationResponse = {
+  success: boolean;
+  participation: ShortlistParticipation;
+};
+
+export const getShortlistParticipation =
+  async (): Promise<ShortlistParticipation> => {
+    const result = await requestJson<ShortlistParticipationResponse>(
+      `${BASE_URL}/user/shortlists`,
+    );
+
+    return result.participation;
+  };

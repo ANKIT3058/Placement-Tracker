@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { requireTenantContext } from "../auth/tenant-context.js";
+import { getShortlistParticipationService } from "./student-participation.service.js";
 import {
   getStudentProfileService,
   updateStudentProfileService,
@@ -161,6 +162,46 @@ export const updateStudentProfileController = async (
     return res.status(500).json({
       success: false,
       message: "Failed to update student profile",
+    });
+  }
+};
+
+// GET /user/shortlists
+//
+// Which of the caller's own shortlists list their registration number (G-8.4).
+//
+// A READ, and only a read. It writes nothing, mutates no Event and changes no
+// extraction — it reports on facts two earlier milestones already persisted.
+//
+// A caller who has set no registration number is answered 200 with an empty
+// result, not 404 and not an error: having no number is an ordinary state, and
+// this feature is exactly as optional as the field it reads.
+//
+// The response carries attachment ids the caller already owns and nothing else.
+// A shortlist names other students; no participant attribute — not even the
+// caller's own — is included, so there is nothing here to leak.
+export const getShortlistParticipationController = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const context = requireTenantContext(req);
+
+    const participation = await getShortlistParticipationService(context);
+
+    return res.json({
+      success: true,
+      participation,
+    });
+  } catch (error) {
+    console.error("[user] Failed to read shortlist participation", {
+      userId: req.user?.id,
+      reason: error instanceof Error ? error.message : "Unknown error",
+    });
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to read shortlist participation",
     });
   }
 };

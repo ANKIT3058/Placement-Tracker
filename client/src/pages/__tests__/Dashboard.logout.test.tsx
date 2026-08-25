@@ -31,6 +31,9 @@ import { getEvents } from "../../api/eventApi";
 vi.mock("../../api/userApi", () => ({
   getStudentProfile: vi.fn().mockRejectedValue(new Error("not under test")),
   updateStudentProfile: vi.fn(),
+  getShortlistParticipation: vi
+    .fn()
+    .mockRejectedValue(new Error("not under test")),
 }));
 
 vi.mock("../../api/eventApi", () => ({
