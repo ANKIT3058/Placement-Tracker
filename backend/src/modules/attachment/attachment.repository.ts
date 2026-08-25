@@ -46,6 +46,76 @@ export const getPendingAttachmentsByEmailId = async (emailId: number) => {
   });
 };
 
+// Attachments whose durable state says the pipeline is unfinished, for the
+// background reconciler (G-7.3).
+//
+// Global, deliberately, and for the same reason `getStalePendingEmails` is:
+// this runs as background work with no caller to derive a tenant from. Tenant
+// safety is not weakened by that, because the queue payload stays
+// `{ attachmentId }` and the worker derives the owner from the row it loads —
+// so ownership travels with the row rather than with a fabricated context.
+//
+// SEPARATE FROM `getPendingAttachmentsByEmailId`, never a widening of it. That
+// one serves the normal enqueue path and must keep its `not: completed` filter;
+// this one must select `completed` rows, which is precisely the case that one
+// excludes.
+//
+// THE PREDICATE, and why each branch is there:
+//
+//   pending    — persisted but the enqueue may never have run, or Redis lost
+//                the job. The email-reconciler case.
+//   processing — a worker claimed it and no longer exists.
+//   completed AND parsedAt IS NULL AND parsingError IS NULL
+//              — the G-7.1 crash window: the download committed, the parse never
+//                did. Nothing else can reach this row, because the normal
+//                enqueue filter excludes `completed`.
+//
+// `failed` is deliberately ABSENT. Those rows always have a job, and
+// `removeOnFail: false` retains its hash permanently, so `add` is a silent
+// no-op — selecting them would be a loop that looks like work and accomplishes
+// nothing. This is the same reasoning that keeps `failed` out of the email
+// sweep.
+//
+// A DELIBERATE SUPERSET. The third branch also matches a healthy job that is
+// mid-parse right now, and a completed download whose MIME type has no parser.
+// Neither is filtered here: the first is absorbed by the deterministic job id,
+// and the second is removed by the parser registry in the reconciler, because
+// the registry is the only thing allowed to decide MIME-to-parser routing — a
+// MIME list in this query would be a second authority on that.
+//
+// `createdAt` is the cutoff column because it is immutable: no code writes it
+// after insert, so an orphan can never age out of this result by having its
+// timestamp refreshed. `Attachment` does carry an `@updatedAt`, which would be
+// more precise, but it can be moved by any future writer — the same trade-off
+// `getStalePendingEmails` resolves the same way.
+//
+// Ordered oldest-first and bounded by `take`, so a standing backlog is drained
+// in a stable order across sweeps rather than re-scanning the same head.
+export const getStaleUnfinishedAttachments = async (
+  olderThan: Date,
+  take: number,
+) => {
+  return prisma.attachment.findMany({
+    where: {
+      createdAt: { lt: olderThan },
+      OR: [
+        {
+          processingStatus: {
+            in: [ATTACHMENT_STATUS.PENDING, ATTACHMENT_STATUS.PROCESSING],
+          },
+        },
+        {
+          processingStatus: ATTACHMENT_STATUS.COMPLETED,
+          parsedAt: null,
+          parsingError: null,
+        },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take,
+  });
+};
+
 // Every mutation below is tenant-scoped, the same way email.repository scopes
 // its status writes: `updateMany WHERE { id, userId }`.
 //

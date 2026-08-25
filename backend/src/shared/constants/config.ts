@@ -40,6 +40,20 @@ const positiveMillis = (raw: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+// The same contract as `positiveMillis` for a COUNT rather than a duration:
+// invalid input falls back rather than being clamped, and `0` is invalid
+// because it reads as "no work", which is never a value an operator means.
+//
+// Separate from `positiveMillis` rather than a reuse of it, because a count
+// must additionally be a whole number: a fractional `take` reaches Prisma and
+// fails the query at run time, turning one mistyped variable into a sweep that
+// can never run.
+const positiveCount = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw);
+
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 // Deadline for a single outbound Gmail or Google OAuth HTTP request.
 //
 // Without one there is none: gaxios attaches a bound only when `opts.timeout`
@@ -97,4 +111,56 @@ export const EMAIL_RECONCILE_INTERVAL_MS = positiveMillis(
 export const EMAIL_RECONCILE_MIN_AGE_MS = positiveMillis(
   process.env.EMAIL_RECONCILE_MIN_AGE_MS,
   300000,
+);
+
+// How often the attachment reconciler sweeps for attachments whose durable
+// state says the pipeline is unfinished but which no BullMQ job represents
+// (G-7.3).
+//
+// Its own interval and its own scheduler, for the same reason the email
+// reconciler has its own: recovery must not be coupled to the component whose
+// failure creates the work it recovers.
+//
+// 60s, matching EMAIL_RECONCILE_INTERVAL_MS. The sweep is one bounded query
+// that usually returns nothing to act on, so running it often costs little and
+// shortens the window in which stranded attachment work goes unnoticed.
+export const ATTACHMENT_RECONCILE_INTERVAL_MS = positiveMillis(
+  process.env.ATTACHMENT_RECONCILE_INTERVAL_MS,
+  60000,
+);
+
+// How long an attachment may look unfinished before the reconciler treats it as
+// stranded.
+//
+// DELIBERATELY LONGER THAN THE EMAIL EQUIVALENT (5 minutes), and the difference
+// is not arbitrary. An email job is a regex extraction; an attachment job is a
+// Gmail download followed by a full PDF or spreadsheet parse, at BullMQ's
+// default concurrency of 1. The cutoff has to clear a realistic drain of that
+// work, or the sweep would chase jobs that are simply still running.
+//
+// Getting it wrong is cheap in one direction only, and it is the safe one:
+// every enqueue carries `jobId: attachment-${id}`, so re-enqueueing a row that
+// still has a job collapses into that job instead of duplicating it. Too short
+// wastes a little Redis traffic; too long delays recovery.
+export const ATTACHMENT_RECONCILE_MIN_AGE_MS = positiveMillis(
+  process.env.ATTACHMENT_RECONCILE_MIN_AGE_MS,
+  900000,
+);
+
+// How many stale attachments one sweep may enqueue.
+//
+// NO EMAIL EQUIVALENT EXISTS, and that asymmetry is the point. An orphaned
+// email requires a failed enqueue to exist at all, so that sweep normally finds
+// nothing. Attachment jobs currently have no production consumer, so
+// `attachment-processing` holds a standing backlog of legitimately queued work
+// — every row of which the recovery predicate deliberately over-selects (the
+// deterministic job id, not the query, is what makes that safe). Unbounded, a
+// sweep would attempt one Redis round trip per backlogged row every interval.
+//
+// The bound costs nothing in correctness: rows beyond it stay eligible and are
+// picked up by the next sweep, because the reconciler never marks anything
+// done.
+export const ATTACHMENT_RECONCILE_BATCH_SIZE = positiveCount(
+  process.env.ATTACHMENT_RECONCILE_BATCH_SIZE,
+  100,
 );
