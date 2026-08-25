@@ -12,11 +12,10 @@ const router = Router();
 
 // Every Event route requires an authenticated caller (RFC-001 §15.2).
 //
-// Authentication only. These handlers still read and write across all Events
-// regardless of owner — `userId` is nullable and nothing scopes a query yet.
-// Knowing *who* is asking is the precondition for scoping, not the scoping
-// itself: that is AC-5.7 (tenant context) and AC-5.9 (enforcement), and until
-// they land an authenticated user can still reach another user's Event.
+// Authentication only: knowing *who* is asking is the precondition for scoping,
+// not the scoping itself. Every handler derives a TenantContext from the session
+// and passes it down, and the repository scopes each query by owner — so this
+// middleware must never be treated as the thing that keeps tenants apart.
 router.use(requireAuth);
 
 // CSRF on the writes only, and AFTER `requireAuth` above (RFC-001 §11.4).

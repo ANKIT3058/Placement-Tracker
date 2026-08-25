@@ -1,15 +1,19 @@
-// Public surface of the AI Core. This module centralizes the request/parse/retry
-// logic that the AI-powered services (email extraction, document
-// classification, event/participant extraction) each duplicate today:
-// constructing an OpenAI request, stripping markdown code fences, parsing JSON,
-// and handling malformed responses.
+// Public surface of the AI Core: one place for constructing an OpenAI request,
+// stripping markdown code fences, parsing JSON, and handling malformed
+// responses. Email extraction and document classification go through it; the
+// event and participant extractors still call the provider directly and have
+// not been migrated.
 //
 // The one function most callers need is `structuredCompletion<T>()`. The rest of
 // the exports (provider, parser, retry policy, errors, config) are the seams it
 // is built from — exposed so services can inject fakes in tests or compose their
-// own variant. Introducing this module changes NO existing behaviour: the
-// current services are untouched and continue to work exactly as before. See the
-// migration note at the bottom for how they can adopt it incrementally.
+// own variant.
+//
+// NOTHING UNDER `ai/` MAY IMPORT A MODULE THAT IMPORTS `ai/`. `getOpenAIClient`
+// lives in the leaf `openai-client` for exactly this reason: it previously sat
+// in `extraction.service`, which closed a cycle through this barrel. That cycle
+// is harmless under production ESM and breaks the CommonJS output ts-jest
+// produces, so re-forming it fails only in tests — often in an unrelated suite.
 
 export { structuredCompletion } from "./structured-completion.js";
 export type { StructuredCompletionParams } from "./structured-completion.js";

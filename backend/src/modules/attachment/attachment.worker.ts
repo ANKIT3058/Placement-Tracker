@@ -7,10 +7,16 @@ import type { AttachmentJobData } from "./attachment.types.js";
 import { describeGmailError } from "../gmail/gmail.errors.js";
 
 // Standalone worker process (run via `npm run worker:attachment`), mirroring
-// the email worker. Today it ONLY downloads and stores files — no parsing, no
-// AI, no event mutation — but the queue is named for the full processing
-// pipeline it will grow into. Failures rethrow so BullMQ applies the queue's
-// retry backoff, making processing retryable.
+// the email worker. It downloads, stores, parses, and — when `USE_AI=true` —
+// runs Document Intelligence; it still mutates no Event, which is the remaining
+// half of G-6. Failures rethrow so BullMQ applies the queue's retry backoff,
+// making processing retryable.
+//
+// IMPLEMENTED, NOT CURRENTLY EXECUTED IN PRODUCTION. No production runtime
+// starts this process: the API service runs no worker, and the only production
+// worker is a manually dispatched drain of `email-processing`. Attachment jobs
+// are still enqueued, so they accumulate with no consumer — assume this code
+// has never run against production data.
 const worker = new Worker<AttachmentJobData>(
   QUEUE_NAMES.ATTACHMENT_PROCESSING,
   async (job) => {

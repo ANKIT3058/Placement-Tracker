@@ -4,10 +4,15 @@
 // and the assembler that merges their outputs into DocumentInsights.
 //
 // `DocumentIntelligenceService` is the entry point most callers want — it runs
-// that sequence end to end and returns the DocumentInsights. It is still not
-// wired into the attachment pipeline, and it persists nothing: writing a result
-// is `saveDocumentIntelligence`'s job, and it is exported separately so the two
-// concerns stay separable at the call site.
+// that sequence end to end and returns the DocumentInsights. It persists
+// nothing; writing a result is `saveDocumentIntelligence`'s job, exported
+// separately so a caller decides whether understanding and storing happen
+// together.
+//
+// PREFER IMPORTING THE CONCRETE MODULE OVER THIS BARREL. The repository export
+// below reaches `lib/prisma`, so importing anything from here pulls a database
+// dependency into the graph — including into callers that only wanted the pure
+// analysis path (see `attachment/document-processing.service`).
 export { DOCUMENT_TYPE, type DocumentType } from "./document-type.js";
 export type { DocumentInsights } from "./document-insights.types.js";
 export type { EventInformation } from "./event-information.types.js";
