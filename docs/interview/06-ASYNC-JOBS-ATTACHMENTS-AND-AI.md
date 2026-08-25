@@ -131,6 +131,11 @@ Gmail sync
         └─ parser = registry.findParser(mimeType)
               parser? → parse → updateParsedResult
               parse throws → markParsingFailed  (status stays "completed", NOT rethrown)
+                  │
+                  └─ runDocumentIntelligence(owner, id, parsed)     ← G-6.3
+                        USE_AI !== "true"? → return, no provider call, no row
+                        analyze → saveDocumentIntelligence
+                        anything throws → logged, swallowed (job still succeeds)
 ```
 
 ## Why attachments are processed *after* the email
@@ -234,28 +239,58 @@ DOCX means writing one class and adding one line to the registry array. Nothing 
 
 # Part 3 — Document Intelligence
 
-## 🚧 Status: implemented, tested, **not wired into the pipeline**
+## Status at a glance
 
-Say this plainly. `src/modules/document-intelligence/index.ts` says it itself: *"It is not
-yet wired into the attachment pipeline and persists nothing."* I verified it — nothing
-outside that folder imports it.
+Three states, and the whole point of this section is not to blur them.
 
-**What exists:**
+| Area | Status | Current reality |
+|---|---|---|
+| Classification | **IMPLEMENTED** | `DocumentClassifier` → `ClassificationResult { documentType, confidence, summary }` |
+| Event / participant extraction | **IMPLEMENTED** | `EventExtractor`, `ParticipantExtractor`, gated on the classification |
+| Assembly | **IMPLEMENTED** | `DocumentInsightsAssembler` → `DocumentInsights`, pure and offline |
+| Orchestration | **IMPLEMENTED** (G-6.2) | `DocumentIntelligenceService.analyze(parsed)` runs the four above in order |
+| Persistence | **IMPLEMENTED** (G-6.1) | `saveDocumentIntelligence` upserts one `DocumentIntelligence` row per attachment |
+| Attachment invocation | **IMPLEMENTED** (G-6.3) | `DocumentProcessingService` calls it after the parsed content is durable |
+| `USE_AI` gate | **IMPLEMENTED** | Read per call; anything other than `"true"` means no provider call and no row |
+| Fail-soft boundary | **IMPLEMENTED** | One `try/catch`, at the call site |
+| **Production execution** | **NOT ACTIVE** | Nothing in production runs the attachment worker, and the one production runtime sets no `USE_AI` — see *Production status* |
+| **Event adjudication** | **PLANNED — remaining G-6** | `eventInformation` is stored and read by nothing. **No document has ever created or updated an Event** |
+| **O-1 … O-6** | **OPEN** | Architectural decisions the planned work depends on; none resolved |
+
+🕘 **Historical:** this section previously read *"implemented, tested, not wired into the
+pipeline"*, and `index.ts` said the layer *"persists nothing"*. That was accurate then.
+G-6.1, G-6.2 and G-6.3 changed it — the layer now runs and stores its output. What has
+**not** changed is the part that matters most: nothing consumes what it stores.
+
+## What runs today
 
 ```
-ParsedAttachment
+Attachment
+      │  download → store → markCompleted
+      ▼
+AttachmentParser (PDF | spreadsheet, via the registry)
       │
       ▼
-DocumentClassifier ──► ClassificationResult { documentType, confidence, summary }
+ParsedAttachment { text, structuredData?, metadata? }
+      │  updateParsedResult  ← persisted FIRST
+      ▼
+DocumentIntelligenceService.analyze(parsed)          ← G-6.2 orchestrator
       │
-      ├──► EventExtractor        (job_description | interview_schedule | general_instructions)
+      ├─ DocumentClassifier ──► ClassificationResult { documentType, confidence, summary }
+      │
+      ├─ EventExtractor        (job_description | interview_schedule | general_instructions)
       │         → EventInformation { company?, stage?, date?, time?, venue? }
       │
-      └──► ParticipantExtractor  (shortlist | seating_arrangement | result)
-                → ParticipantInformation { participants: [{ attributes }] }
+      ├─ ParticipantExtractor  (shortlist | seating_arrangement | result)
+      │         → ParticipantInformation { participants: [{ attributes }] }
+      │
+      └─ DocumentInsightsAssembler ──► DocumentInsights
       │
       ▼
-DocumentInsightsAssembler ──► DocumentInsights
+saveDocumentIntelligence(owner, attachmentId, insights, extractedAt)   ← G-6.1
+      │
+      ▼
+DocumentIntelligence row     ──✗──►  nothing reads it
 ```
 
 - `DOCUMENT_TYPE`: `job_description`, `interview_schedule`, `general_instructions`,
@@ -263,22 +298,201 @@ DocumentInsightsAssembler ──► DocumentInsights
 - The classifier **never throws.** Any failure — AI disabled, provider error, malformed
   output, an unrecognised label — degrades to `{ UNKNOWN, confidence: 0, summary: "" }`.
 - Both extractors gate on classification: a `shortlist` never reaches the event extractor.
+  Their type gates are **disjoint**, so at most one of them makes a network call.
 - Both extractors normalise the model's output field by field, dropping anything missing,
   wrong-typed, or empty, so `undefined` means *leave unchanged* rather than *blank it*.
 - The assembler is pure — no AI, no network — and attaches the optional slices only when
   they actually carry content.
 
-**Honest inconsistency worth knowing:** `DocumentClassifier` uses the AI Core
-(`structuredCompletion`), but `EventExtractor` and `ParticipantExtractor` still call
-`openai.chat.completions.create` directly with their own fence-stripping and `JSON.parse`.
-They were written before the AI Core and haven't been migrated. That's a real, visible
-"partially completed refactor" — and it's a *good* thing to volunteer, because it shows you
-know the difference between a plan and a shipped state.
+## The orchestrator — `DocumentIntelligenceService`
 
-**How I'd wire it up:** after `updateParsedResult`, run classify → extract → assemble, then
-feed `EventInformation` into the *existing* decision layer as another observation — with its
-own confidence, subject to the same identity gate and the same confidence guard. The point
-is that it should not get a private path to the database.
+It **coordinates the components above; it does not add an AI architecture of its own.** Its
+four collaborators are constructor-injected with singleton defaults, so a test supplies
+fakes without touching a provider. `analyze(parsed)` runs classify → event extract →
+participant extract → assemble, sequentially and in that fixed order.
+
+Two deliberate absences worth being able to defend:
+
+**It does not persist.** `analyze` returns a `DocumentInsights` and writes nothing. Storing
+is `saveDocumentIntelligence`'s job, exported separately, so the call site decides whether
+understanding and storing happen together.
+
+**It contains no `try/catch`.** All three AI collaborators are contractually no-throw — an
+unclassifiable document is a normal outcome that arrives as a degraded *value*, not an
+exception. A catch here could therefore only ever swallow a genuine defect, such as a
+collaborator breaking that contract.
+
+## Persistence — the `DocumentIntelligence` row
+
+One row per attachment, enforced by the database via `@@unique([attachmentId, userId])` —
+the same guarantee, for the same reason, that `EmailExtraction` gets from
+`@@unique([emailId, userId])`. Attachment processing is genuinely replayed (BullMQ stalled
+jobs), so the write is an **upsert** resolved on that key, and the constraint is what makes
+a replay converge on one row instead of appending a second.
+
+The architecturally interesting fields:
+
+| Field | Why it matters |
+|---|---|
+| `attachmentId` + `userId` | Composite FK to `Attachment(id, userId)`, so the row cannot disagree with its attachment's owner |
+| `classification` | The `DocumentType`, stored as its string value — not a database enum, so the vocabulary can evolve in `document-type.ts` without a lockstep migration |
+| `classificationConfidence` | **Named for what it is.** How sure the classifier was *about the document's type* — see the warning below |
+| `eventInformation` | JSON. The slice the planned G-6 work will consume. Written today, read by nothing |
+| `participantInformation` | JSON. Deliberately an open bag of document-supplied labels; normalising it is a later entity-resolution layer's job |
+| `extractedAt` | Moves forward on every successful write, which is what distinguishes it from `createdAt` — a replay is not a new understanding |
+
+**LATEST WINS, deliberately.** The update branch sends explicit values for every mutable
+field, including SQL `NULL` for an absent slice. Prisma reads `undefined` as *leave this
+column alone*, which would let a replay that understood **less** silently retain the
+previous attempt's `eventInformation` — leaving the row describing neither run.
+
+> ⚠️ **`classificationConfidence` is not an extraction confidence.** It answers *"how sure
+> am I this is an interview schedule"*, not *"how sure am I this date is right"*. It is the
+> **only** confidence the layer produces — there is no extractor-level or field-level
+> confidence anywhere in the module, and the extraction prompts do not ask for one. It is
+> **not** used for Event matching today, and whether it could be is **O-6**, below.
+
+## The call site — where G-6.3 wired it in
+
+In `DocumentProcessingService.parseAndPersist`, and the ordering is the design:
+
+```
+updateParsedResult(...)                 ← parsed content becomes durable
+        ↓
+runDocumentIntelligence(owner, id, parsed)
+```
+
+**Understanding is derived from the parsed text, so it must not be able to exist for content
+that was never stored.** Persisting the parse first means a `DocumentIntelligence` row
+always has the parsed document behind it that produced it.
+
+### The `USE_AI` gate
+
+`process.env.USE_AI !== "true"` → return immediately. No provider call, no row.
+
+Read **per call**, not at module load — matching `extraction.service`. Compared against the
+exact string `"true"`, so a missing, empty, or mistyped value means off. That is not merely
+cost control: **the production worker ships no `OPENAI_API_KEY`**, so an ungated call would
+fail on every attachment forever and log a failure for each one.
+
+### Fail-soft — one boundary, and only one
+
+This is the part to get right, because "we catch errors" is not an architecture:
+
+```
+attachment job
+  ├─ download          → failure marks attachment failed, RETHROWN (BullMQ retries)
+  ├─ parse             → failure records parsingError, NOT rethrown
+  ├─ persist parsed    → durable
+  └─ document intelligence
+        ├─ classifier / extractors / assembler   no-throw by contract → degrade to values
+        ├─ saveDocumentIntelligence              PROPAGATES database errors on purpose
+        └─ ◄── the single try/catch lives HERE ──►  logs and swallows
+```
+
+Three distinct behaviours, and they are not the same thing:
+
+1. **The AI components don't fail** — they degrade to `unknown` / `{}` / no participants.
+2. **The repository does fail loudly.** It deliberately catches nothing, so a failed write
+   is never reported as a successful understanding.
+3. **The call site catches both** — and it is the *only* place that policy lives.
+
+Why swallow at all? Because the download and the parse already succeeded and are already
+durable. Failing the job would re-download the file on retry without making an AI or
+database failure any likelier to resolve — the same isolation, for the same reason, that a
+parse failure already gets. **This is a narrow, local decision, not a global policy: nothing
+else in the application swallows AI or database errors.**
+
+The log carries safe scalars only — `attachmentId` and `error.message`, never the error
+object — because this path can surface provider errors whose payloads may carry request
+context.
+
+## Production status
+
+**Implemented but not production-active.** Both halves of that sentence are load-bearing:
+the code is shipped and tested, and it cannot execute in production today. It is not broken
+— it has no runtime.
+
+Two independent reasons, either of which alone is sufficient:
+
+**1. Nothing consumes the `attachment-processing` queue in production.** The API service
+(`node dist/src/server.js`) starts Express, the Gmail scheduler and the email reconciler —
+no BullMQ worker. The only production worker runtime is a manually dispatched GitHub Actions
+job that runs `node dist/src/workers/email.worker.js`. `worker:attachment` exists only as a
+`tsx watch` development script. So attachment jobs **are enqueued** — `processEmailJob` ends
+with `enqueueAttachmentJobs` — and then wait, with no consumer. Nothing downloads, nothing
+parses, and `DocumentProcessingService.process` is never called.
+
+**2. The one production runtime sets no `USE_AI`.** The workflow omits `USE_AI` and
+`OPENAI_API_KEY` on purpose — *"With `USE_AI` unset the extractor is regex-only:
+deterministic, free, and one fewer external dependency in the run we have the least evidence
+about."* So even reached, the gate would return before any provider call.
+
+**Say it as a distinction, because it is the interesting part:** *implemented* is a property
+of the repository; *production-executing* is a property of the deployment. This feature is
+the first and only place in the system where the two currently differ, and knowing which
+claim you are making is the difference between an honest status and an overclaim.
+
+## Planned G-6 — the one step that remains
+
+**G-6 is not complete.** The sub-numbering the repository's commits use:
+
+| | Scope | Status |
+|---|---|---|
+| **G-6.1** | Persistence groundwork — `DocumentIntelligence` model, migration, repository | Done |
+| **G-6.2** | Orchestration — `DocumentIntelligenceService` | Done |
+| **G-6.3** | Attachment-processing integration — the gated, fail-soft call site | Done |
+| **Remaining G-6** | Route persisted `eventInformation` into Event adjudication | **Not started** |
+
+Conceptually, and **none of this exists today**:
+
+```
+DocumentIntelligence.eventInformation        (stored today)
+        ↓
+viability / normalization                    (does not exist)
+        ↓
+document observation                         (does not exist)
+        ↓
+Event adjudication — the SAME path an email observation takes
+        ↓
+existing Event create / update / review machinery — unchanged
+```
+
+The principle the earlier version of this section already stated, and which still holds:
+**it should not get a private path to the database.** A document must enter where an email
+enters, or the boundary was drawn wrong.
+
+Why it is deliberately a separate step: it is the first time a document could change an
+Event, and it inherits every question this system already answers for email — identity,
+confidence, recognition tier, and what a document's confidence even means relative to an
+extraction's.
+
+### Open decisions — O-1 … O-6
+
+**All OPEN.** None is resolved, and none should be read as a requirement or a plan. They are
+recorded because the remaining work cannot be specified until they are answered — and
+because answering them silently, inside an implementation, is how a system acquires
+behaviour nobody decided on.
+
+| | Question | Status |
+|---|---|---|
+| **O-1** | May a document with no resolved stage adjudicate at all? Passing the `"unknown"` sentinel makes it eligible for the weakest tier's exact-equality matching; refusing it means schedule documents naming no round never adjudicate | **OPEN** |
+| **O-2** | May documents ever take the Event **update** branch, and on what evidence — or are they create-and-review only? | **OPEN** |
+| **O-3** | Should document → Event provenance be recorded? No relation exists between `DocumentIntelligence` and `Event`, so "which document said this" is currently unanswerable | **OPEN** |
+| **O-4** | Should the review path honour `matchResult` instead of discarding it? Copying email's low-confidence branch verbatim creates a review Event per document, including for Events that already exist | **OPEN** |
+| **O-5** | Company normalization scope — documents only, or globally? The identity key applies no normalization, and email lowercases its source text while the document extractor does not | **OPEN** |
+| **O-6** | What *is* a document observation's confidence? `classificationConfidence` is a statement about the document's type, not about its extracted fields, and no field-level confidence exists to substitute | **OPEN** |
+
+## The partially-completed refactor (still true)
+
+`DocumentClassifier` uses the AI Core (`structuredCompletion`), but `EventExtractor` and
+`ParticipantExtractor` still call `openai.chat.completions.create` directly with their own
+fence-stripping and `JSON.parse`. They were written before the AI Core and haven't been
+migrated. That's a real, visible partial refactor — and it's a *good* thing to volunteer,
+because it shows you know the difference between a plan and a shipped state.
+
+One detail that changed underneath it: they import `getOpenAIClient` from
+`extraction.service`, which now **re-exports** it rather than defining it. See *Part 4*.
 
 ---
 
@@ -319,7 +533,8 @@ retryPolicy.execute(async () => {
 | Piece | Responsibility |
 |---|---|
 | `AIProvider` (interface) | `complete(request) → raw text`. Knows nothing about JSON or retries. |
-| `OpenAIProvider` | Wraps the **same memoized client** the services already used (`getOpenAIClient`). Translates OpenAI's error surface into typed errors. |
+| `OpenAIProvider` | Wraps the **same memoized client** the services already use (`getOpenAIClient`). Translates OpenAI's error surface into typed errors. |
+| `openai-client` | Owns `getOpenAIClient` — the lazily-constructed, memoized client. A **leaf**: it imports the OpenAI SDK and nothing else in this codebase. |
 | `JsonResponseParser` | Strip markdown fences, `JSON.parse`, throw `MalformedResponseError` carrying the raw text. |
 | `RetryPolicy` | Up to N attempts, linear backoff (`delayMs × attempt`), retrying only on transient errors. Defaults: 3 attempts, 250 ms. |
 | `ModelConfig` | `{ model, temperature?, maxTokens? }`. Default: `gpt-4o-mini` @ `temperature: 0`. Provider-agnostic on purpose. |
@@ -371,6 +586,60 @@ and degraded on any failure (extraction → regex-only, classifier → UNKNOWN).
 the Core changed nothing observable. That's a deliberate refactoring discipline worth
 stating: **an abstraction that changes behaviour while it's being introduced can't be
 verified.**
+
+## The dependency graph, and the constraint it encodes
+
+```
+   openai (SDK)
+       ▲
+   ai/openai-client        ← leaf: owns the memoized getOpenAIClient
+       ▲            ▲
+       │            └──────────── extraction.service   (re-exports it)
+   ai/openai-provider                    ▲
+       ▲                                 │
+   ai/structured-completion              └── document-intelligence extractors
+       ▲
+   ai/index
+```
+
+**The architectural fact:** `openai-client` is a leaf, and nothing under `ai/` imports
+anything outside it. That is what makes the AI Core a genuine dependency *sink* rather than
+a module tangled with its own callers.
+
+🕘 **Historical, and worth knowing because it constrains future edits.** `getOpenAIClient`
+used to live in `extraction.service`, so `openai-provider` imported it from there — closing
+a cycle: `ai/index → structured-completion → openai-provider → extraction.service →
+ai/index`. Under production ESM that cycle is harmless; live bindings are linked before any
+module body runs. Under the **CommonJS** output ts-jest produces it is fatal — `exports` is
+populated incrementally, so a module reached mid-cycle sees a half-built namespace, and the
+symptom was `RetryPolicy is not a constructor` in tests that touched neither retries nor
+extraction.
+
+The fix moved the definition into its own leaf module; `extraction.service` re-exports the
+symbol so its existing importers and test mocks are unaffected, and there is still exactly
+one memoized client. **The rule that survives: nothing under `ai/` may import from a module
+that imports `ai/`.** A cycle that passes in production and fails only under the test
+transform is an expensive kind of bug to rediscover. The same rule is stated for
+contributors in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
+**The client is lazy, not constructed at startup.** `getOpenAIClient()` checks
+`OPENAI_API_KEY` on **every** call and throws `OPENAI_API_KEY not set` when it is absent,
+then memoizes the client in a module-scoped variable on first successful call. Two
+consequences worth knowing:
+
+- Importing this module — directly or through `ai/index` — costs nothing and touches no
+  configuration. A process that never reaches a gated AI path never constructs a client and
+  never needs a key. That is what lets the production worker run with no `OPENAI_API_KEY` at
+  all.
+- Because the key is re-checked per call rather than captured once, a missing key surfaces
+  at the call that needed it, not as an opaque startup failure.
+
+**Why the leaf placement matters more than it looks.** The natural instinct when a new AI
+feature needs the client is to import it from wherever is convenient — and
+`extraction.service` still re-exports it, so that import compiles. The rule is about the
+*direction*: `ai/openai-client` must keep importing nothing but the OpenAI SDK. Adding any
+application import to it re-forms the cycle, and the failure will not appear in production
+— only under Jest, in a suite that may have nothing to do with the change.
 
 ## "What happens when OpenAI is down?"
 

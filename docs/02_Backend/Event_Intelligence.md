@@ -582,19 +582,19 @@ The consolidated audit. Each item states what the architecture asserts, what the
 
 | # | Intent | Current implementation | Class |
 |---|---|---|---|
-| **D-1** | Identity requires agreement on company, round and date; ambiguity yields no claim | Middle-tier scoring accepts on date proximity alone — an exact date reaches the acceptance bar with a contradicting round contributing nothing | **Debt — active false-merge path** |
-| **D-2** | Recognition is bounded so identity cannot stretch arbitrarily | Weakest tier applies no date bound; a sole same-name candidate matches at any temporal distance, and the resulting date difference is then reported as a reschedule | **Debt — most dangerous path** |
+| **D-1** | Identity requires agreement on company, round and date; ambiguity yields no claim | *Was:* middle-tier scoring accepted on date proximity alone — an exact date reached the acceptance bar with a contradicting round contributing nothing. *Now:* identity is classified before scoring; a CONTRADICTS round is vetoed and never scored, so no score can admit it | **Closed — AC-2 / `54584db`** |
+| **D-2** | Recognition is bounded so identity cannot stretch arbitrarily | *Was:* weakest tier applied no date bound; a sole same-name candidate matched at any temporal distance, and the resulting date difference was then reported as a reschedule. *Now:* the tier's query requires a date and a window, and recognition passes ±30 days (`LOOSE_MATCH_WINDOW_DAYS`) | **Closed — AC-1 / `8edf87a`** |
 | **D-3** | Untrusted observations are held for a human without disturbing belief | Achieved, but by discarding the computed recognition and creating a separate Event; on an exact key collision the observation is silently dropped instead | **Debt** |
 | **D-4** | Deliberately non-actionable mail is distinguishable from processed mail | The ignored marking is unconditionally overwritten with completed on return | **Debt — data loss** |
 | **D-5** | Confidence expresses evidence quality; unmentioned fields are scored neutrally | A penalty stack double-counts absences already scored, and flatly penalises the unmentioned-venue case the scorer deliberately neutralised | **Debt — contradicts a documented decision** |
-| **D-6** | Round is an identity attribute | Weighted 0.10 in confidence and effectively optional in middle-tier recognition | **Debt — root cause of D-1** |
+| **D-6** | Round is an identity attribute | Still weighted 0.10 in the confidence model. No longer optional in recognition: since AC-2 the round decides eligibility categorically before scoring, so the weight ranks eligible candidates and no longer bears on identity | **Debt — narrowed to the confidence model; was the root cause of D-1** |
 | **D-7** | The identity key is a stable approximation of identity | Key is unnormalised; extraction strategy determines its casing, so the same activity yields different keys depending on whether the model was available | **Debt — infrastructure state affects identity** |
 | **G-1** | Human review catches unreliable conclusions | Threshold responds to sparseness, not wrongness; a confidently wrong extraction never reaches a human | **Gap — by construction** |
 | **G-2** | False merges are the primary risk and are guarded against | No detection of any kind exists | **Gap** |
 | **G-3** | Duplicates are the tolerable failure | No detection, no merge tooling; users find them | **Gap** |
 | **G-4** | Every accepted revision is recorded | Manual confirmation writes no history | **Gap — see `EventUpdate.md`** |
 | **G-5** | One message may describe several activities | Extraction is instructed to select the single most important; remaining rounds are discarded | **Gap — known and documented as future scope** |
-| **G-6** | Documents are a second source of event-affecting facts entering at the same adjudication boundary | The document-intelligence layer is now **invoked and persisted** (G-6.3): attachment processing classifies and extracts after parsing, and writes the result to `DocumentIntelligence`. What it produces still reaches **no consumer** — `eventInformation` is stored, never adjudicated, so documents do not affect any Event | **Partially closed — understood and stored; adjudication boundary still not entered** |
+| **G-6** | Documents are a second source of event-affecting facts entering at the same adjudication boundary | **Implemented:** persistence (G-6.1), orchestration (G-6.2), and the attachment-processing call site (G-6.3) — gated on `USE_AI`, fail-soft at that one site. **Not production-active:** no production runtime consumes the attachment queue, and the one that exists sets no `USE_AI`. **Planned:** route the stored `eventInformation` into adjudication. **Open:** O-1 … O-6. `eventInformation` is stored, never adjudicated, so documents do not affect any Event | **Partially closed — understood and stored; adjudication boundary still not entered** |
 
 Two clarifications, since earlier handbook documents describe the intended shape:
 
@@ -602,9 +602,32 @@ Two clarifications, since earlier handbook documents describe the intended shape
 
 What remains of **G-6** is therefore exactly one step: routing a document's `eventInformation` into the same adjudication path an email observation takes. That step is deliberately separate, because it is the first time a document could change an Event, and it inherits every question this subsystem already answers for email — identity, confidence, recognition tier, and what a document's confidence even means relative to an extraction's.
 
+Those questions are tracked as **O-1 … O-6** and are all **OPEN**: whether a stage-less document may adjudicate (**O-1**); whether documents may ever take the update branch (**O-2**); whether document → Event provenance is recorded (**O-3**); whether the review path should honour its recognition result (**O-4**); the scope of company normalization (**O-5**); and what a document observation's confidence even is (**O-6**). None is resolved, and the remaining work cannot be specified until they are. `DocumentIntelligence.classificationConfidence` is a statement about a document's *type*, not about its extracted fields, and it is not used for recognition today.
+
+Two further statements about **G-6**, kept distinct because they are different claims. *Implemented* is a property of this repository: the layer runs and stores its output. *Production-active* is a property of the deployment, and it is **not** — no production runtime consumes the attachment queue, and the one that exists sets no `USE_AI`, so the call site is unreachable there twice over. Neither fact changes G-6's status, which turns solely on the adjudication boundary. `docs/interview/06-ASYNC-JOBS-ATTACHMENTS-AND-AI.md` carries the detail; this document is not the Document Intelligence specification.
+
 `Event.md`'s decision state machine presents the trust gate as preceding recognition. That is accurate as a description of **authority** — an untrusted observation never reaches an existing Event. In execution, recognition runs first and its result is discarded on the review path, which is the wasteful shape **D-3** describes.
 
 **Also observed, non-behavioural:** a superseded confidence function remains exported and unused, alongside the active one. Harmless, but it is the kind of duplication that invites a future contributor to call the wrong one.
+
+---
+
+# Current residual recognition risks
+
+What remains after **D-1** and **D-2** were closed. These are **not** the same category as the closed defects above and are deliberately not given `D-n` numbers: each is a consequence of a decision the architecture states and defends, not a contradiction of one. They are recorded because closing two false-merge paths is not the same as having none, and because a reader who sees only the closed rows would overstate how much recognition now guarantees.
+
+The distinction that separates them from D-1 is exactly ADR-006's: **contradiction is not silence.** D-1 was a contradicted identity attribute being overruled by a score. Each risk below arises where an identity attribute was never **stated** — which the architecture rules is evidence of nothing, in either direction.
+
+**1 · Tier 2 can admit on date proximity alone when round identity is UNKNOWN.**
+The arithmetic that produced D-1 is unchanged: an exact date scores 1.0 at weight 0.5, which is exactly the acceptance threshold. When the round is unresolved on either side the identity gate returns UNKNOWN, the candidate stays eligible, and a Δ=0 candidate is admitted with **zero** contribution from stage and zero from confidence. Company is still exact-equality in the candidate query, so the real predicate is *same company + same calendar day + round unstated* — narrower than D-1, and not nothing.
+
+**2 · Confidence participates in admission in one narrow band.**
+With the round UNKNOWN and Δ=1, the score is `0.35 + 0.2 × min(incoming confidence, event confidence)`, so the candidate is admitted if and only if that minimum is **≥ 0.75**. In that band a confidence value decides an identity question rather than ranking a candidate. This is tolerable while every observation comes from one source and one confidence model. ADR-006 anticipates the case where that stops being true: *"Confidence values from different sources are not commensurable… No cross-source confidence term may re-enter the admission phase."* Any second observation source has to satisfy that rule against this band.
+
+**3 · Tier 3 does not apply the semantic identity gate.**
+The weakest tier compares round by **exact SQL equality** in its candidate query and never calls the identity classifier. Two records both carrying the unresolved-round sentinel therefore compare equal and can form a sole candidate, where tier 2 would classify the same pair as UNKNOWN. This is a real difference in identity protection between the tiers, and it is recorded as such — it is **not** a defect the tiers were meant to share and one silently lost. Tier 3's identity claim was always uniqueness-based rather than attribute-based, and AC-1 bounded that claim in time without changing its nature.
+
+None of the three is a proposed change. No fix is specified here, no threshold is revised, and no tier is redesigned — this section states current behaviour so that a later decision about these paths is made deliberately rather than discovered.
 
 ---
 
@@ -725,10 +748,11 @@ Not by volume: candidate discovery is narrow and per-observation, and the write 
 Derived directly from source, verified by reading every file on the reasoning path: the tier order and short-circuit behaviour; the scoring weights, the acceptance threshold, and the ±3-day candidate window; the sole-candidate rule at the weakest tier; the viability gate on company and date; the acting threshold; the strict-less-than confidence comparator; field-level change detection restricted to date, time and venue; the reschedule classification and key regeneration; the confidence weights, completeness bonus and penalty stack; and the merge order of the two extraction strategies.
 
 **The discrepancies are computed or directly observed, not inferred.**
-**D-1** is arithmetic: date weight 0.5 × exact-date score 1.0 = 0.5, which meets an acceptance threshold of 0.5 with zero contribution from any other term. The existing test for round mismatch places candidates two days apart, and its inline comment states the distance was chosen so the date term alone could not clear the threshold — confirming the boundary case is known-adjacent and untested.
-**D-2** is structural: the weakest tier's candidate query filters on company and round with no date predicate.
+**D-1** was arithmetic: date weight 0.5 × exact-date score 1.0 = 0.5, which meets an acceptance threshold of 0.5 with zero contribution from any other term. The arithmetic is unchanged and is the basis of residual risk 1; what AC-2 removed is the ability of a *contradicting* round to reach it. The round-mismatch test that placed candidates two days apart — chosen, per its inline comment, so the date term alone could not clear the threshold — has been superseded by a sweep over Δ ∈ {0,1,2,3} × confidence ∈ {0, 0.25, 0.5, 0.75, 1.0} asserting no match and no scoring call.
+**D-2** was structural: the weakest tier's candidate query filtered on company and round with no date predicate. It now requires date and window arguments, verified at both inclusive ±30-day boundaries.
+**The residual risks** are computed from the same source: risks 1 and 2 from the score arithmetic against the 0.5 threshold, risk 3 from reading the weakest tier's query, which compares round by SQL equality and never calls the identity classifier.
 **D-3**, **D-4**, **D-5**, **D-6** and **D-7** are each read directly from the relevant paths.
-**G-6** was verified by exhaustive search: the classifier, extractors and insights assembler are referenced nowhere outside their own module except in one unrelated comment, and attachment processing terminates at persistence.
+**G-6** was verified by exhaustive search, twice. The first pass established the layer was unreachable. The current pass confirms it is now reached — attachment processing invokes the orchestrator after persisting the parsed content, and the result is written to `DocumentIntelligence` — and that **nothing reads that table**: the only references to it outside its own module are the eight lines G-6.3 added to the attachment pipeline, so no consumer of `eventInformation` exists. The production-inactivity claim is read from the worker entrypoints and the production workflow, which runs the email worker only and sets no `USE_AI`.
 
 **Medium confidence in attributed rationale.** The "reason" and "rejected alternative" narratives reconstruct justification consistent with the implementation and its comments. They are sound engineering rationale for the design as it stands, not a record of the original discussion. Where the code states intent explicitly — the neutral treatment of unmentioned venues, the deliberate create-only review path — that is noted as stated rather than inferred.
 

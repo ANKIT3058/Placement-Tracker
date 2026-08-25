@@ -60,7 +60,7 @@ Everything here is ✅ **Current** unless tagged.
 |---|---|---|
 | API | `npm run dev` / `npm start` | HTTP + Gmail scheduler |
 | Email worker | `npm run worker:email` | Consumes `email-processing` |
-| Attachment worker | `npm run worker:attachment` | Consumes `attachment-processing` |
+| Attachment worker | `npm run worker:attachment` | Consumes `attachment-processing`. **Development only** — no production runtime starts it, which is why Document Intelligence is implemented but not production-active |
 
 ---
 
@@ -114,9 +114,18 @@ Everything here is ✅ **Current** unless tagged.
   boundary, not here.
 
 ### Document Intelligence — `src/modules/document-intelligence/`
-- 🚧 **Partial.** Classifier + event/participant extractors + assembler are implemented and
-  exported. **Nothing outside this folder imports it.** It is not part of the running
-  pipeline. See [ch. 06](06-ASYNC-JOBS-ATTACHMENTS-AND-AI.md).
+- **What it does:** turns a `ParsedAttachment` into a `DocumentInsights` — what a document
+  *means*, as opposed to what it contains. `DocumentIntelligenceService` orchestrates a
+  classifier, an event extractor, a participant extractor and an assembler; the repository
+  upserts the result as one `DocumentIntelligence` row per attachment.
+- **Where it runs:** invoked by attachment processing after the parsed content is durable,
+  gated on `USE_AI`, and fail-soft at that call site.
+- 🚧 **The gap that remains.** Its output is stored and **read by nothing** — no document has
+  ever created or updated an Event. Routing `eventInformation` into adjudication is the
+  remaining G-6 work, and it depends on open decisions O-1 … O-6.
+- ⚠️ **Implemented, not production-active.** No production runtime consumes the
+  `attachment-processing` queue, and the one that exists sets no `USE_AI`.
+- See [ch. 06](06-ASYNC-JOBS-ATTACHMENTS-AND-AI.md) for all of the above in detail.
 
 ---
 
@@ -178,7 +187,10 @@ with a deterministic `jobId` of `attachment-<id>`.
 **8. Attachment worker** (`document-processing.service.ts`)
 Load attachment + email + gmailAccount in one query → skip if already completed → derive
 owner from the row → download bytes with that mailbox's refresh token → store under a random
-UUID key → mark completed → ask the parser registry for a parser → parse → persist result.
+UUID key → mark completed → ask the parser registry for a parser → parse → persist result →
+**run Document Intelligence and persist the understanding** (gated on `USE_AI`, fail-soft, so
+neither an AI nor a database failure here fails the job). The understanding stops at storage:
+nothing reads it, and no Event is touched.
 
 ---
 
