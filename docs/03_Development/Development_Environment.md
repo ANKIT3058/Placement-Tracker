@@ -200,11 +200,38 @@ cd backend && cp .env.example .env
 | `GOOGLE_CLIENT_ID` | **Yes**, for Gmail | OAuth client id. | `<id>.apps.googleusercontent.com` |
 | `GOOGLE_CLIENT_SECRET` | **Yes**, for Gmail | OAuth client secret. | `GOCSPX-…` |
 | `GOOGLE_REDIRECT_URI` | **Yes**, for Gmail | Must match the Google Cloud Console entry **exactly**, and must resolve to `GET /gmail/callback`. | `http://localhost:3000/gmail/callback` |
-| `USE_AI` | No | `"true"` enables the OpenAI extraction path. Any other value — including unset — runs pattern extraction only. Compared as the literal string `"true"`. | `false` |
-| `OPENAI_API_KEY` | Only if `USE_AI=true` | `getOpenAIClient()` throws `OPENAI_API_KEY not set` when absent. Unused when `USE_AI` is not `"true"`. | `sk-…` |
+| `SESSION_SECRET` | **Yes** | Signs the session cookie. With `NODE_ENV=production` an unset value is a hard startup failure; in development a fallback is used. **Never commit a real value.** | a long random string |
+| `SESSION_REDIS_URL` | No | Connection for the **session store**, which is a separate `node-redis` client from BullMQ's `ioredis`. Falls back to `REDIS_URL` when unset — the usual local setup. | `redis://localhost:6379` |
+| `SESSION_COOKIE_DOMAIN` | No | **Leave unset locally.** Only for an API and frontend on different hosts under one registrable domain. Setting it drops the `__Host-` prefix. | *(unset)* |
+| `NODE_ENV` | No | `production` enables `Secure` cookies, the `trust proxy` hop, and the hard failure on a missing `SESSION_SECRET`. Leave unset or `development` locally. | `development` |
+| `USE_AI` | No | `"true"` enables the AI path at **two** call sites — email extraction and Document Intelligence. Any other value, including unset, means regex-only extraction and no Document Intelligence. See the scope note below. | `false` |
+| `OPENAI_API_KEY` | Only if `USE_AI=true` | `getOpenAIClient()` throws `OPENAI_API_KEY not set` when absent. Read lazily, so it is only needed once a gated path actually calls a provider. **Never commit a real key.** | `sk-…` |
 | `PORT` | No | HTTP port. Defaults to `3000`. | `3000` |
-| `GMAIL_SYNC_INTERVAL_MS` | No | Scheduler tick. Defaults to `120000` (2 minutes) — see `src/shared/constants/config.ts`. | `120000` |
+| `GMAIL_SYNC_INTERVAL_MS` | No | Gmail scheduler tick. Defaults to `120000` (2 minutes) — see `src/shared/constants/config.ts`. | `120000` |
+| `GMAIL_REQUEST_TIMEOUT_MS` | No | Deadline for a single outbound Gmail / Google OAuth HTTP request. Defaults to `10000`. Invalid or non-positive values fall back to the default rather than being clamped — `0` counts as invalid, since it reads as "no timeout". | `10000` |
+| `EMAIL_RECONCILE_INTERVAL_MS` | No | How often the email reconciler sweeps. Defaults to `60000`. | `60000` |
+| `EMAIL_RECONCILE_MIN_AGE_MS` | No | How long an Email may sit `pending` before the reconciler treats it as never queued. Defaults to `300000` (5 minutes). Lower it to see recovery quickly in development. | `300000` |
+| `WORKER_EXIT_WHEN_DRAINED` | No | **Email worker only**, and read once at startup. `"true"` makes the worker exit when the queue is genuinely empty instead of running permanently. Leave unset for normal development — `npm run worker:email` should stay up. | *(unset)* |
 | `ATTACHMENT_STORAGE_DIR` | No | Root for downloaded attachments. Defaults to `<cwd>/storage/attachments`. That path is gitignored. | `D:/tmp/attachments` |
+
+> [!IMPORTANT]
+> **`USE_AI` is two independent gates, not a global AI switch.** It is read at
+> exactly two places:
+>
+> | Call site | What it gates | When off |
+> |---|---|---|
+> | `extraction.service` | The AI branch of **email extraction** | `extract()` falls back to regex patterns only |
+> | `document-processing.service` | The whole **Document Intelligence** step | Returns immediately — no provider call, no `DocumentIntelligence` row |
+>
+> The AI components themselves (`DocumentClassifier`, the extractors,
+> `structuredCompletion`) do **not** check it — they would call a provider if
+> invoked directly. So `USE_AI=true` enables those two paths and nothing else,
+> and a future AI feature would need its own gate. Both are compared against the
+> exact string `"true"`, so a mistyped value means off.
+
+> **Secrets.** `SESSION_SECRET`, `OPENAI_API_KEY`, `GOOGLE_CLIENT_SECRET` and both
+> database URLs are credentials. They belong in `backend/.env` (gitignored) and
+> never in a document, a commit, or a log.
 
 ## `client/.env`
 
@@ -347,10 +374,10 @@ Development uses `tsx` and does not require a build.
 
 ### 8. Start
 
-Three processes, in this order. Each needs its own terminal.
+Four processes. Each needs its own terminal.
 
 ```bash
-# backend/  — API + Gmail scheduler
+# backend/  — API + Gmail scheduler + email reconciler
 npm run dev
 
 # backend/  — email processing worker
@@ -365,6 +392,57 @@ npm run dev
 
 Verify the backend with `GET http://localhost:3000/health`, which executes
 `SELECT 1` and returns `{ status: "ok", database: "connected" }`.
+
+**What each process actually is, and how they interact:**
+
+```
+  npm run dev  (API)                         PRODUCER
+  ├─ Express                                 serves HTTP
+  ├─ Gmail scheduler       every 120 s ──► persists Email ──► enqueues
+  └─ Email reconciler      every  60 s ──► re-enqueues stale pending Emails
+                                                     │
+                                                     ▼
+                                          Redis: email-processing
+                                                     │
+  npm run worker:email                               ▼        CONSUMER
+  └─ extraction → confidence → matching → decision → Event
+                                          └─► enqueues attachment jobs
+                                                     │
+                                                     ▼
+                                       Redis: attachment-processing
+                                                     │
+  npm run worker:attachment                          ▼        CONSUMER
+  └─ download → store → parse → persist → Document Intelligence (if USE_AI=true)
+```
+
+Both schedulers live **inside the API process**, not in a worker. Nothing
+consumes a queue unless the matching worker is running, so with only
+`npm run dev` up, mail is ingested and jobs accumulate but no Event ever appears.
+That is the same shape production has — see the production note below.
+
+> [!IMPORTANT]
+> **Development and production do not run the same processes.**
+>
+> | | Development | Production |
+> |---|---|---|
+> | API + both schedulers | `npm run dev` | Render, always on |
+> | Email worker | `npm run worker:email`, permanent | GitHub Actions, **manual run-to-drain** with `WORKER_EXIT_WHEN_DRAINED=true` |
+> | Attachment worker | `npm run worker:attachment`, permanent | **Nothing runs it.** Jobs are enqueued and wait |
+> | `USE_AI` | Your choice | **Unset** — extraction is regex-only, and Document Intelligence never executes |
+>
+> So local behaviour is a superset of production behaviour. Attachment parsing
+> and Document Intelligence work locally and have no production runtime at all.
+> [`docs/deployment.md §11`](../deployment.md#11-runtime-model--what-actually-runs)
+> is the authoritative reference for the production side.
+
+**Two development conveniences worth knowing:**
+
+- The reconciler fires one sweep immediately at startup, then on its interval.
+  To watch it recover an orphan, stop Redis, `POST /email`, restart Redis, and
+  lower `EMAIL_RECONCILE_MIN_AGE_MS` — otherwise the row is not eligible for five
+  minutes.
+- `npm run test:redis` checks Redis connectivity on its own, which is faster than
+  inferring it from a worker that will not start.
 
 ### 9. Connect a mailbox (optional)
 

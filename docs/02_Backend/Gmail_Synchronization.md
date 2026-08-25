@@ -175,7 +175,7 @@ These are counters, not persisted state. FAILED leaves nothing behind but a log 
 
 Cursor-based delta synchronization with a full-read fallback.
 
-**Bootstrap** establishes a baseline: read the current cursor position, then read a bounded window of recent messages. Used on first connection and whenever the cursor is rejected.
+**Bootstrap** establishes a baseline: read the current cursor position, then list the mailbox's messages, paging to exhaustion. Used on first connection and whenever the cursor is rejected. (It read a single bounded page until **Premise 2** below was superseded.)
 
 **Incremental** is the steady state: ask for message-additions since the cursor, page until exhausted, and collect ids into a set so a message appearing in several change records is fetched once.
 
@@ -262,11 +262,57 @@ A pre-check looks for the message id before writing; a uniqueness constraint bac
 
 **Decision** — Process messages one at a time within a mailbox, and mailboxes one at a time within a cycle.
 
-**Why chosen** — Failure isolation stays trivial (a try/catch per message, per mailbox), API usage stays predictable against rate limits, and — currently — it is what keeps the shared API client safe, since all calls in a process go through one mutable client whose credentials are re-set per call.
+**Why chosen** — Failure isolation stays trivial (a try/catch per message, per mailbox), and API usage stays predictable against rate limits.
 
 **Alternative** — Fetch messages concurrently with bounded parallelism, and sync mailboxes in parallel.
 
-**Why rejected for now** — Three preconditions are unmet. Concurrency would race on the shared mutable client, so credentials from one mailbox could be used for another. It would make rate-limit behaviour bursty and harder to reason about. And it would widen the de-duplication race window, which — combined with decision 3 — converts a benign constraint violation into a dropped message. The performance ceiling is not currently the binding constraint; correctness under concurrency is. Note that this safety is maintained **by convention, not by construction** — exactly the invariant that breaks quietly during an unrelated refactor.
+> **⚠ SUPERSEDED ASSUMPTION — the credential-safety argument no longer applies.**
+>
+> *This decision previously read:* sequential processing is "what keeps the shared API client safe, since all calls in a process go through one mutable client whose credentials are re-set per call", and concurrency "would race on the shared mutable client, so credentials from one mailbox could be used for another". It closed by noting that the safety was maintained **by convention, not by construction** — "exactly the invariant that breaks quietly during an unrelated refactor."
+>
+> *That prediction was correct, and the invariant had in fact already broken.* See **Premise 1** under *Superseded premises* below. The shared mutable client is gone: each mailbox operation now builds its own client, so credential isolation is structural rather than a property of not running things at the same time.
+
+**Why still rejected — the remaining reasons, restated.** One of the three original preconditions is now met, so the conclusion is re-derived rather than carried forward:
+
+| Original precondition | Status |
+|---|---|
+| Concurrency would race on the shared mutable client | **Met.** One client per operation; no shared credential state exists to race |
+| Rate-limit behaviour would become bursty and harder to reason about | **Still unmet.** Unchanged by anything since |
+| It would widen the de-duplication race window, turning a benign constraint violation into a dropped message (with decision 3) | **Still unmet.** Unchanged |
+
+Two of three still hold, so the decision stands — but it now stands on throughput-shaping and de-duplication grounds, **not** on credential safety. The distinction matters: the old argument implied concurrency was *unsafe*, and the current one only says it is *unjustified*. Anyone revisiting this should evaluate the two remaining preconditions on their own merits rather than re-reading a credential risk that no longer exists.
+
+### 6a. Concurrency, stated precisely
+
+Because the previous decision's framing invited a stronger reading than the code supports, the actual boundary is worth stating on its own.
+
+**What is concurrent today**
+
+- **The web process runs two independent timers** — the Gmail scheduler and the email reconciler — with separate `isRunning` guards. They overlap each other freely, and that is deliberate: a stalled Gmail request must not stop orphan recovery.
+- **A background sync cycle and an explicit `POST /gmail/sync` genuinely overlap**, because the scheduler lives in the same process that serves requests. This is the case the per-operation client exists for.
+- **Downstream processing is a separate process entirely.** Everything past the queue boundary is the email worker's, not sync's.
+
+**What is serialized, and by what**
+
+| Serialized | By | Guarantee |
+|---|---|---|
+| Messages within one mailbox | The `for` loop in the sync routine | Failure isolation per message |
+| Mailboxes within one cycle | The `for` loop in the scheduler | One mailbox's failure never aborts the others |
+| Overlapping runs of the *same* scheduler | An `isRunning` flag | A cycle that outlasts its interval skips rather than stacking |
+
+**What protects correctness rather than ordering**
+
+Serialization is not the safety mechanism; three constructions are:
+
+- **Per-operation OAuth clients** — credential isolation by construction.
+- **`gmailMessageId` uniqueness** — re-running a sync is safe regardless of order.
+- **Deterministic BullMQ job ids** — a duplicate enqueue collapses into the existing job.
+
+**The trade-off as it stands**
+
+Throughput is bounded by sequential fetching, and a large mailbox therefore syncs slowly. The system accepts that because the pressure is not throughput.
+
+**What would change with multiple concurrent workers or processes.** The `isRunning` guards are **in-process only** — plain module-scoped booleans, not distributed locks. A second API instance runs its own schedulers with its own flags, so both would sync the same mailboxes simultaneously. The de-duplication constraint and the deterministic job ids mean that produces duplicate *work*, not corrupted data, but cursor advancement is not coordinated and the concurrent-fetch precondition above remains unmet. **Horizontal scaling of the web process requires distributed coordination before it is safe** — this is an unresolved constraint, not a solved problem.
 
 ### 7. Idempotent persistence keyed on the provider's message id
 
@@ -342,7 +388,9 @@ The asymmetry is worth internalizing: **retry lives past the queue boundary, not
 
 All durable sync state is one cursor per mailbox, so a restart resumes from the last completed run and the scheduler runs a cycle immediately on startup rather than waiting an interval. Cursor loss self-heals via re-bootstrap. Because ingestion is idempotent, re-running is always safe and is the standard operational response.
 
-**Recovery limit:** bootstrap reads a bounded window of recent messages, not the whole mailbox. Recovery is therefore complete only while the gap is smaller than that window. If the system is down long enough that the cursor expires *and* more than that many messages arrive, the messages in between are not recovered by any automatic path. There is no backfill mechanism.
+**Recovery limit:** bootstrap now walks the mailbox listing to exhaustion rather than reading a bounded window, so the recovery limit is Gmail's own history retention rather than a message count — see **Premise 2** below.
+
+**Recovery beyond sync.** An Email that was persisted but never enqueued is not a sync failure and sync cannot see it. That case has its own repair path — see *The email reconciler* below.
 
 ## Failure preferences
 
@@ -351,6 +399,97 @@ All durable sync state is one cursor per mailbox, so a restart resumes from the 
 ```
 
 The subsystem is built to prefer duplicate work over missed work, because de-duplication is cheap and gaps are undetectable. The primary failure mode is the one case where the implementation violates its own stated preference: a failed message is silently dropped rather than duplicated, delayed, or surfaced.
+
+---
+
+# Request Deadlines and Credential Failure
+
+Two mechanisms that bound how badly a single mailbox can go wrong. Both are recent enough that the decisions above were written without them.
+
+## Every request is bounded, from one place
+
+`createOAuthClient` sets `transporterOptions: { timeout: GMAIL_REQUEST_TIMEOUT_MS }` — 10 seconds by default. google-auth-library builds its transporter from those options and uses that one gaxios instance for **both halves of every operation**: its own OAuth token refresh, and the Gmail API call dispatched through it. Configuring it there therefore bounds token refresh, every API request, every page of a paginated walk, and the attachment download — without repeating a deadline at six call sites, where one omission would silently reopen the hole.
+
+**Why a deadline at all.** gaxios attaches one only when `opts.timeout` is supplied, and neither googleapis nor google-auth-library supplies it. An unanswered request otherwise waits forever — and because the scheduler awaits each account in sequence and clears its overlap guard in a `finally`, one stalled socket stopped Gmail sync for **every** user until the process restarted. A `finally` runs when its `try` settles; an await that never settles never gets there.
+
+**Abort, not abandon.** gaxios turns `timeout` into `AbortSignal.timeout()`, which aborts the underlying fetch. Abandoning the promise instead would leave the socket open and the scheduler still holding work that never ends.
+
+**Per attempt, not per operation.** gaxios re-arms the timeout on each retry and caps retries independently, so one HTTP operation's worst case is roughly three attempts plus backoff — about 30 seconds. That is comfortably inside the 120-second sync interval, so a stalled mailbox is detected and the cycle still finishes within one period. **A timeout is not retried indefinitely**, and a timed-out mailbox simply fails its cycle and is retried on the next one. Nothing is persisted.
+
+## Three failure classes, kept distinct
+
+The code classifies failures rather than treating them alike, and the distinction decides whether anything durable happens:
+
+| Class | Example | Outcome |
+|---|---|---|
+| **Transient** | timeout, network, `429`, any `5xx` | Retried at the transport layer; the mailbox fails this cycle and is retried next. **Nothing persisted** |
+| **Expired cursor** | `404` on the history call | Classified specifically, handled by re-bootstrapping to a full sync. Not an error condition |
+| **Permanent authorization failure** | HTTP **400** carrying Google's **`invalid_grant`** | `reauthRequiredAt` is stamped on the mailbox; the error is then rethrown unchanged |
+
+**Only the last class sets the flag.** `isPermanentGmailAuthFailure` is true for exactly `status === 400 && googleError === "invalid_grant"` — the one case Google documents as requiring the user to authenticate and consent again, so presenting the same token cannot succeed however many times it is tried. Everything else is false on purpose: `401` is ambiguous and routinely cured by the library's own refresh; `403` covers rate limiting as readily as a scope error and the status cannot tell them apart; a `400` without `invalid_grant` is this application's bug, not a revoked authorization. Excluding a mailbox on any of those would strand a user whose mailbox is perfectly healthy — a worse outcome than the futile retrying the flag prevents.
+
+## What `reauthRequiredAt` means
+
+A nullable timestamp on the mailbox record. A timestamp rather than a boolean because it records **when** authorization broke, which a boolean would lose; `NULL` means eligible.
+
+- **The background scheduler skips the mailbox.** Its account query filters on `reauthRequiredAt: null`, so the mailbox drops out of automatic sync and stops burning a cycle on a token Google will not accept.
+- **An explicit user-triggered sync still attempts it.** That path resolves mailboxes by owner alone, so a user who has just reconnected is never blocked by a stale flag.
+- **The mailbox is *not* disconnected.** The record stays and the refresh token is deliberately left in place — Google has already invalidated it, so deleting it protects nothing and only makes reconnect harder to reason about.
+- **Clearing it takes a real event.** A successful reconnect writes a new refresh token and clears the flag in the same update; a successful sync also clears it, written only when the flag was actually set so the ordinary success path stays at one write. `historyId` is untouched either way, so sync resumes incrementally rather than re-reading the mailbox.
+
+The user-visible contract: **the mailbox stops syncing automatically until the user authorizes it again.** Nothing is deleted, and nothing else about the account changes.
+
+---
+
+# The Email Reconciler
+
+Not part of sync, but the repair path for a failure sync creates and cannot see. Documented here because the inconsistency originates at this boundary.
+
+**The invariant it restores:** *every persisted Email eventually reaches the queue.*
+
+Ingestion commits the Email to Postgres and then enqueues to Redis. The two stores cannot share a transaction, so a failed enqueue leaves a committed row at `processingStatus: "pending"` with no job behind it. Sync cannot recover it: the de-duplication check short-circuits every replay of that message, and the cursor has already advanced past it. An email accepted through the manual route has no Gmail message to replay at all.
+
+| | |
+|---|---|
+| Where it runs | The **API process**, on its own timer — not a worker, and deliberately not the Gmail scheduler's timer |
+| Why separate | The failure that creates orphans is Redis being unreachable during ingestion, which is exactly the degraded moment when the rest of the system is least healthy. Recovery must not depend on the component most likely to be broken — and a stalled Gmail request can leave that scheduler's guard set for the life of the process |
+| What it scans | `pending` Emails older than a configured minimum age (default 5 minutes), because a legitimately queued email is indistinguishable from an orphan until a backlog has had time to drain |
+| What it does | Re-enqueues each row through the **normal producer**, carrying the row's own owner. It never writes `processingStatus` — the worker owns that lifecycle, and a second writer would make it ambiguous |
+| Isolation | Per-row `try/catch`; one failure never aborts the sweep, and a failed row stays `pending` and eligible next pass |
+
+**It is safe to re-enqueue a row that already has a job.** The reconciler cannot see Redis, so it must be. The deterministic job id is what makes it safe: BullMQ refuses a second `add` while a job with that id exists, so the duplicate collapses into the job already queued. Checking Redis first would race the exact window the sweep exists to close.
+
+**The guarantee is eventual processing with at-least-once delivery — not exactly-once.** Exactly-once is not achievable across Postgres and Redis and is not claimed. The job id suppresses duplicate *jobs*; the one non-idempotent side effect that survives a genuine double run is absorbed at the database by the constraint that makes the extraction write an upsert.
+
+See [`docs/deployment.md §11.6`](../deployment.md#116-the-email-reconciler) for its operational behaviour, and [`docs/03_Development/Development_Environment.md`](../03_Development/Development_Environment.md) for exercising it locally.
+
+---
+
+# Superseded Premises
+
+Two premises this document was originally written on no longer hold. Both are preserved rather than deleted, because the reasoning that produced them still constrains changes here.
+
+## Premise 1 — "one mutable client per process, credentials re-set per call"
+
+> **SUPERSEDED**
+
+**The old premise.** All Gmail API calls in a process went through a single shared OAuth client whose credentials were re-set before each call. Decisions 5 and 6 rested on this: sequential processing was described as what *kept that client safe*, and concurrency was rejected partly because it "would race on the shared mutable client, so credentials from one mailbox could be used for another." The document noted the safety held "by convention, not by construction."
+
+**What changed.** The convention was already broken. Five of the six mailbox helpers survived only by accident — they issue one API call, and google-auth-library happens to capture the credential object synchronously before its first await. `getHistoryChanges` did not survive it at all: it set credentials once and then paginated, so every page after the first re-read whatever the shared client held by then and could walk a **different mailbox**. That is a real cross-tenant credential leak, and it was reachable because the scheduler runs in the same process that serves requests, so a background sync and an explicit user sync genuinely overlap.
+
+**Current reality.** One client per **operation**. A helper builds its own client and its own Gmail service together, so no other operation can reach it and no interleaving can cross credentials. A single process-wide client remains for the three calls that act as the *application* rather than as a user — generating the auth URL, exchanging the code, verifying an ID token — and it must never hold mailbox credentials. Credential isolation is now structural, and does not depend on when things run.
+
+## Premise 2 — "bootstrap reads a bounded window of recent messages"
+
+> **SUPERSEDED**
+
+**The old premise.** A full sync listed a single page of recent messages. *Failure Handling* stated the consequence as a recovery limit: recovery was complete "only while the gap is smaller than that window", and if the cursor expired while more than a page of messages arrived, the messages in between were "not recovered by any automatic path."
+
+**What changed.** `maxResults` is a **per-page** limit, not a total, and a `nextPageToken` in the response means more messages exist. Reading one page and discarding the token dropped an unbounded remainder — and the caller then advanced the mailbox's cursor past everything it had never seen, putting those messages permanently beyond the reach of any later incremental sync. The bounded window was not a conservative limit; it was a silent gap, and it was worst in exactly the case bootstrap exists to handle.
+
+**Current reality.** The listing walks to exhaustion, continuing on the **token** rather than on whether a page had messages — a page can come back empty while more remain behind it. There is deliberately **no page cap**, because a cap is the original defect wearing a different name; each request is independently bounded by the client timeout instead. A page that rejects propagates rather than being swallowed, so a partial listing can never be mistaken for a complete mailbox: the caller writes the watermark on success, and a swallowed page error would turn a retryable failure into a permanent gap.
+
+**What the recovery limit is now.** Gmail's own history retention, not a message count. If the cursor expires, bootstrap re-reads the mailbox listing in full. There is still no backfill mechanism for mail that has aged out of what Gmail will return.
 
 ---
 
@@ -368,7 +507,9 @@ The subsystem is built to prefer duplicate work over missed work, because de-dup
 
 **Consistency boundary: one mailbox, one run.** No cross-mailbox transaction and no globally consistent sync point. A cycle can leave some mailboxes advanced and others not.
 
-**Single-writer assumption.** The overlap guard is in-process memory. Two API instances would run two schedulers with no mutual exclusion, permitting concurrent syncs of one mailbox. The uniqueness constraint still prevents duplicate rows, but the losing writer's error is counted as a message failure — which, combined with cursor advancement, converts a benign race into a dropped message. **This subsystem assumes a single instance.** Horizontal scaling requires a distributed lock first.
+**Credential isolation: structural.** Each mailbox operation builds its own OAuth client, so no interleaving can cross one mailbox's credentials into another's request. This does not depend on sequential execution — see **Premise 1**.
+
+**Single-writer assumption.** The overlap guard is in-process memory. Two API instances would run two schedulers with no mutual exclusion, permitting concurrent syncs of one mailbox. The uniqueness constraint still prevents duplicate rows, and credentials can no longer be crossed, but the losing writer's error is counted as a message failure — which, combined with cursor advancement, converts a benign race into a dropped message. **This subsystem still assumes a single instance.** Horizontal scaling requires a distributed lock first.
 
 ---
 
@@ -411,12 +552,12 @@ Dependency direction is strictly one-way: **sync depends on the mailbox credenti
 
 **Correctness**
 - **Close the drop path (highest value).** Record failed message ids for later replay, preserving the simple cursor-advancement rule while eliminating silent loss. Alternatives — holding the cursor at the oldest failure, or per-message checkpointing — carry poison-message and write-amplification costs respectively.
-- **Bounded-window backfill** so recovery completeness stops depending on outage duration.
+- ~~**Bounded-window backfill** so recovery completeness stops depending on outage duration.~~ **Superseded** — bootstrap now pages to exhaustion (**Premise 2**), so completeness is bounded by Gmail's history retention rather than by outage duration. A backfill beyond that retention remains unbuilt.
 
 **Scalability**
-- **Distributed coordination** to replace the in-process overlap guard, removing the single-instance assumption.
-- **Per-request API clients** to replace the shared mutable client, converting a convention-maintained invariant into a structural one and unblocking safe concurrency.
-- **Bounded parallelism** within a mailbox, valid only once the two items above land.
+- **Distributed coordination** to replace the in-process overlap guard, removing the single-instance assumption. **Now the sole remaining blocker to running more than one API instance.**
+- ~~**Per-request API clients** to replace the shared mutable client.~~ **Done** (**Premise 1**) — the convention-maintained invariant is now structural. It unblocked *credential safety* under concurrency, not concurrency itself; the other two preconditions in decision 6 still stand.
+- **Bounded parallelism** within a mailbox, valid only once rate-limit shaping and the de-duplication race are addressed.
 
 **Product**
 - **Push notification instead of polling.** Collapses freshness from minutes to seconds and cuts quota substantially. The cursor machinery does not disappear — it becomes the reconciliation path for missed notifications, which is its correct long-term role.
@@ -449,10 +590,16 @@ Content is not stable across fetches and parser versions — whitespace, encodin
 Acquisition and interpretation have unrelated failure profiles and latencies. Interpretation calls a paid model with multi-second latency; inline execution would make mailbox freshness depend on model availability and would turn an extraction failure into an ingestion failure. Since a message we cannot yet understand is still one we must not lose, capture has to be durable before understanding is attempted. The queue also supplies the retry that sync itself lacks.
 
 **Q: Everything is sequential. Why not parallelize?**
-Three preconditions are unmet: all API calls in a process share one mutable client whose credentials are re-set per call, so concurrency would race on credentials; parallel fetches make rate-limit behaviour bursty; and wider de-duplication races combine with cursor advancement to turn constraint violations into dropped messages. Throughput is not the binding constraint today — correctness under concurrency is.
+Originally for three reasons; one of them is now gone. The credential argument — all API calls sharing one mutable client, so concurrency would race on credentials — no longer applies: each operation builds its own client, and that isolation is structural rather than a consequence of not running things at the same time. Two reasons remain: parallel fetches make rate-limit behaviour bursty and harder to reason about, and wider de-duplication races combine with cursor advancement to turn constraint violations into dropped messages. Throughput is not the binding constraint today, so the decision stands — but on those grounds, not on safety. The honest version of this answer distinguishes *unsafe* from *unjustified*, and this is now the second.
 
 **Q: What breaks if you run two instances of this service?**
-The overlap guard is in-process memory, so both schedulers run with no mutual exclusion and can sync one mailbox concurrently. The uniqueness constraint still prevents duplicate rows, but the losing writer sees a constraint violation, which is counted as a message failure — and the cursor advances past it. A benign race becomes a dropped message. The subsystem assumes a single instance; horizontal scaling needs a distributed lock first.
+The overlap guard is in-process memory — a module-scoped boolean, not a distributed lock — so both schedulers run with no mutual exclusion and can sync one mailbox concurrently. Credentials can no longer be crossed, and the uniqueness constraint still prevents duplicate rows. But the losing writer sees a constraint violation, which is counted as a message failure, and the cursor advances past it: a benign race becomes a dropped message. The subsystem assumes a single instance; horizontal scaling needs a distributed lock first.
+
+**Q: What happens when a Gmail request hangs?**
+It is aborted after `GMAIL_REQUEST_TIMEOUT_MS` (10 s), configured once on the OAuth client so it covers token refresh, every API call, every page of a paginated walk, and attachment downloads. Before that deadline existed, one unanswered request stopped Gmail sync for every user until the process restarted — the scheduler awaits accounts in sequence and clears its overlap guard in a `finally`, and a `finally` never runs for an await that never settles. The timeout is per attempt, so one operation's worst case is roughly three attempts plus backoff, comfortably inside the sync interval.
+
+**Q: When does a mailbox need reconnecting, and what happens to it?**
+Only on HTTP 400 with Google's `invalid_grant` — the one failure Google documents as requiring fresh consent. That stamps `reauthRequiredAt`, which drops the mailbox out of the background scheduler's account query. It is not disconnected: the record and the (already-invalid) token stay, an explicit user-triggered sync still attempts it, and either a reconnect or a later successful sync clears the flag. `401` and `403` deliberately do not trigger it — `401` is routinely cured by the library's own token refresh, and `403` cannot be distinguished from rate limiting.
 
 **Q: How would you migrate to push notifications?**
 Add the subscription path and treat notifications as triggers for the existing per-mailbox sync rather than as a replacement for it. The cursor stays: notifications can be missed or delivered out of order, so the delta read remains the reconciliation mechanism and the periodic poll becomes a lower-frequency safety net. The valuable property is that idempotent ingestion already makes duplicate triggers harmless, so the migration does not require new correctness machinery.
@@ -463,7 +610,7 @@ Add the subscription path and treat notifications as triggers for the existing p
 
 **High.**
 
-Every behavioural claim — the two sync modes, bootstrap ordering, single-point cursor advancement, two-layer de-duplication, atomic message-plus-metadata commit, enqueue-after-commit ordering, layered failure containment, narrow expiry classification, queue retry configuration, the bounded bootstrap window, and per-mailbox credential resolution for attachments — is derived directly from the source: the Gmail module in full, the message store and producer, the processing worker and processor, queue and Redis infrastructure, configuration constants, and the attachment path.
+Every behavioural claim — the two sync modes, bootstrap ordering, single-point cursor advancement, two-layer de-duplication, atomic message-plus-metadata commit, enqueue-after-commit ordering, layered failure containment, narrow expiry classification, queue retry configuration, exhaustive bootstrap pagination, the request deadline and its per-attempt semantics, the `invalid_grant`-only reauthentication transition, the reconciler's scan and re-enqueue, and per-mailbox credential resolution for attachments — is derived directly from the source: the Gmail module in full, the message store, producer and reconciler, the processing worker and processor, queue and Redis infrastructure, configuration constants, and the attachment path.
 
 The **primary failure mode** (a failed message dropped because the cursor advances regardless of per-message outcomes) is derived from code, not inferred: the failure counter, the unconditional cursor write at end of run, and the absence of any durable record of failed ids are each directly observable.
 
@@ -472,4 +619,6 @@ Two items are **architectural inference** rather than direct code reading, and a
 - The rationale attributed to past decisions (the "why rejected" arguments) reconstructs reasoning consistent with the implementation and its comments. It is sound engineering justification for the current design, not a transcript of the original discussion.
 - The multi-instance failure analysis is deduced from the in-memory guard plus constraint behaviour plus cursor advancement. It has not been empirically reproduced.
 
-Test coverage in this subsystem is limited to message parsing and attachment-metadata extraction. The synchronization algorithm itself — mode selection, ordering, cursor advancement, failure paths — is **not covered by tests**, so its properties are guaranteed by reading rather than by execution. Treat that as the relevant caveat when changing this code.
+**Test coverage has changed since this document was first written, and the caveat is now narrower.** It previously read that coverage was "limited to message parsing and attachment-metadata extraction" and that the synchronization algorithm was not covered at all. Four of the properties described above now have dedicated suites — credential isolation across interleaved operations, full-sync pagination, the request deadline, and the reauthentication lifecycle — alongside parsing and the OAuth routes.
+
+What remains uncovered is the **algorithm's control flow**: mode selection, cursor advancement, and the per-message failure path. Those properties are still guaranteed by reading rather than by execution, which is the relevant caveat when changing this code — and the primary failure mode above sits squarely inside the uncovered part.

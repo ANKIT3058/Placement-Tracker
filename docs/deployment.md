@@ -26,6 +26,7 @@ cloning the repository for the first time.
 | [8](#8-verification-checklist) | Verification checklist |
 | [9](#9-troubleshooting) | Troubleshooting |
 | [10](#10-common-pitfalls) | Common pitfalls |
+| [11](#11-runtime-model--what-actually-runs) | **Runtime model — what actually runs**, and how to operate it |
 
 **Companion document:** the
 [postmortem](postmortems/vercel-render-oauth-deployment.md) explains *why* this
@@ -36,6 +37,16 @@ architecture is shaped the way it is. This guide explains *how* to deploy it.
 # 1. Overview
 
 Two deployed artifacts, three managed services, one identity provider.
+
+> [!IMPORTANT]
+> **The deployed backend is a web service, not a job runner.** Render runs
+> `node dist/src/server.js`, which serves HTTP and starts two in-process timers.
+> It starts **no BullMQ worker**. Queued work is drained by a separate,
+> manually dispatched GitHub Actions run. If you are debugging "the email was
+> received but nothing happened", read
+> [§11 Runtime model](#11-runtime-model--what-actually-runs) before anything else
+> — that is the single most common cause, and it is by design rather than by
+> fault.
 
 ```
                        ┌──────────────────────────────────┐
@@ -210,10 +221,24 @@ local        http://localhost:3000/gmail/callback
 | `NODE_ENV` | `development` | Set to `production` in deployments. Enables `Secure` cookies, the `trust proxy` hop, and the hard failure on missing `SESSION_SECRET`. |
 | `SESSION_COOKIE_DOMAIN` | unset | **Leave unset for this architecture.** Only for API + frontend on different hosts under *one* registrable domain. Setting it drops the `__Host-` prefix; setting it to a public suffix (`.vercel.app`) makes browsers reject the cookie outright. |
 | `PORT` | `3000` | Render overrides this. |
-| `USE_AI` | `false` | `"true"` enables the OpenAI extraction path. Compared against the literal string. |
-| `OPENAI_API_KEY` | — | Required only when `USE_AI=true`. |
-| `GMAIL_SYNC_INTERVAL_MS` | `120000` | Background scheduler interval. |
-| `ATTACHMENT_STORAGE_DIR` | `<cwd>/storage/attachments` | Downloaded attachments. |
+| `USE_AI` | `false` | `"true"` enables the AI path at **two** call sites — email extraction and Document Intelligence. **Not a global AI switch**; see the note below. Compared against the literal string. |
+| `OPENAI_API_KEY` | — | Required only where `USE_AI=true` actually reaches a provider. Read lazily by `ai/openai-client`, which throws `OPENAI_API_KEY not set` on first use. |
+| `GMAIL_SYNC_INTERVAL_MS` | `120000` | Gmail scheduler interval, in the web process. |
+| `GMAIL_REQUEST_TIMEOUT_MS` | `10000` | Deadline for a single outbound Gmail or Google OAuth HTTP request. Invalid or non-positive values fall back to the default rather than being clamped. See [§11.5](#115-gmail-timeouts-and-reauthentication). |
+| `EMAIL_RECONCILE_INTERVAL_MS` | `60000` | How often the email reconciler sweeps, in the web process. |
+| `EMAIL_RECONCILE_MIN_AGE_MS` | `300000` | How long an Email may sit `pending` before the reconciler treats it as never queued. |
+| `WORKER_EXIT_WHEN_DRAINED` | unset | **Worker runtime only, never the web service.** `"true"` makes the email worker exit once the queue is genuinely empty. This is what turns a permanent worker into a batch drain. See [§11.3](#113-the-github-actions-drain). |
+| `ATTACHMENT_STORAGE_DIR` | `<cwd>/storage/attachments` | Downloaded attachments. **Ephemeral on Render's filesystem** — and no production runtime currently downloads attachments anyway (§11.2). |
+
+> [!NOTE]
+> **`USE_AI` is two independent gates, not one global flag.** It is read at
+> exactly two call sites: `extraction.service` (the email extraction AI path,
+> falling back to regex when off) and `document-processing.service` (the whole
+> Document Intelligence step, which does nothing and writes no row when off).
+> The AI components themselves do not check it. Setting it to `"true"` therefore
+> enables those two paths and nothing else — a future AI feature would need its
+> own gate. The production worker deliberately sets **neither** `USE_AI` nor
+> `OPENAI_API_KEY`, so production extraction is regex-only (§11.3).
 
 ## 3.3 Frontend
 
@@ -676,8 +701,327 @@ an OAuth callback mid-flow and produce a failure that looks like misconfiguratio
 
 ---
 
+# 11. Runtime model — what actually runs
+
+The section to read when something is wrong in production. Everything above
+describes how to *deploy*; this describes what is *executing* afterwards, and how
+to operate it.
+
+## 11.1 Two runtimes, and only one of them is always on
+
+```
+  ALWAYS ON                                RUN ON DEMAND
+  ─────────────────────────────            ─────────────────────────────
+  RENDER — web service                     GITHUB ACTIONS — batch drain
+  node dist/src/server.js                  node dist/src/workers/email.worker.js
+                                           WORKER_EXIT_WHEN_DRAINED=true
+  ├─ Express (HTTP API)
+  ├─ Gmail scheduler        (timer)        ├─ consumes: email-processing
+  └─ Email reconciler       (timer)        └─ exits when the queue is empty
+
+  Starts NO BullMQ worker.                 Started by a human. Not scheduled.
+  Produces queue jobs; consumes none.      Not triggered by a push or a deploy.
+```
+
+**The distinction that matters operationally:** *"the application server is
+running"* and *"background work is being processed"* are separate facts here, and
+the first does not imply the second. The web service ingests mail and enqueues
+jobs continuously. Those jobs sit in Redis until somebody dispatches a drain.
+
+A healthy-looking `/health`, a growing `bull:email-processing:wait` list, and no
+new Events is therefore **the expected steady state between drains**, not a
+malfunction.
+
+## 11.2 What the web service does — and does not — start
+
+`server.ts` connects the session Redis client, then calls `app.listen`. In the
+listen callback it starts exactly two timers:
+
+| Started | Interval | What it does |
+|---|---|---|
+| `startGmailScheduler()` | `GMAIL_SYNC_INTERVAL_MS` (120 s) | Syncs every eligible mailbox, sequentially. Persists Emails and enqueues `email-processing` jobs |
+| `startEmailReconciliationScheduler()` | `EMAIL_RECONCILE_INTERVAL_MS` (60 s) | Re-enqueues Emails that were persisted but never queued — see [§11.6](#116-the-email-reconciler) |
+
+Both run **inside the web process**. Both are producers.
+
+**Not started, anywhere in production:**
+
+- **No email worker.** `worker:email` is `tsx watch` — a development file-watcher.
+- **No attachment worker.** Same: `worker:attachment` is `tsx watch`, and no
+  Render service or workflow runs it. Attachment jobs **are** enqueued —
+  `processEmailJob` ends with `enqueueAttachmentJobs` — and then wait with no
+  consumer. Nothing downloads or parses an attachment in production today, which
+  is also why Document Intelligence cannot execute there.
+
+> [!WARNING]
+> `attachment-processing` accumulates jobs that nothing drains. This is a known
+> consequence of the current runtime, not a leak to fix urgently — the jobs are
+> durable and their ids are deterministic, so a future attachment runtime picks
+> them up rather than losing them.
+
+## 11.3 The GitHub Actions drain
+
+`.github/workflows/production-worker.yml`. The entire production background
+runtime.
+
+```
+  workflow_dispatch  (manual — no schedule, no push, no pull_request trigger)
+        │
+        ▼
+  environment: production-worker      ← required reviewer; the job PAUSES here
+        │                               before a single step executes, and the
+        │                               production secrets are scoped to it
+        ▼
+  checkout (SHA-pinned)  →  setup-node 24  →  npm ci  →  npm run build
+        │                                                (prisma generate && tsc
+        │                                                 && fix-esm-imports)
+        ▼
+  verify DATABASE_URL and REDIS_URL are present   ← fails fast and legibly
+        │
+        ▼
+  node dist/src/workers/email.worker.js
+        env: DATABASE_URL, REDIS_URL, WORKER_EXIT_WHEN_DRAINED=true
+        │
+        ▼
+  process jobs at concurrency 1  →  queue empty  →  graceful shutdown  →  exit 0
+```
+
+| Property | Value |
+|---|---|
+| Trigger | `workflow_dispatch` only — **manual** |
+| Approval gate | Yes. `environment: production-worker` carries a required reviewer |
+| Concurrency | `group: production-email-worker`, `cancel-in-progress: false` — a second run queues rather than cancelling a drain mid-job |
+| Working directory | `backend/` (`defaults.run`) |
+| Permissions | `contents: read` |
+| Timeout | 30 minutes — a ceiling for the cases where the worker *cannot* exit (wedged Redis, paused queue), not the expected duration |
+| Queue consumed | `email-processing` **only** |
+| `USE_AI` / `OPENAI_API_KEY` | **Deliberately absent.** Production extraction is regex-only — deterministic, free, and one fewer external dependency in the run there is least evidence about |
+
+**It is a run-to-drain execution model, not a continuously running worker.**
+`WORKER_EXIT_WHEN_DRAINED=true` is the whole difference: the same compiled
+entrypoint runs as a permanent worker without it. The variable is read **once**,
+at module load, because the mode is a property of the run.
+
+**Why `node dist/...` and not `npm run worker:email`:** that script is
+`tsx watch`, which never exits and would hold the runner until the timeout.
+
+**`DIRECT_DATABASE_URL` in the build step is a deliberate dead value.**
+`prisma.config.ts` reads it eagerly for every CLI command including `generate`,
+so the build cannot start without *something* there. Nothing reads it — generate
+is offline codegen — so the real unpooled endpoint stays out of GitHub entirely.
+Migrations are applied from a workstation ([§4.5](#45-migrations)), never here.
+
+> There is no queue-inspection step in this workflow. A temporary read-only one
+> existed briefly during commissioning and was removed; it is not part of the
+> architecture.
+
+## 11.4 Graceful shutdown and the drain condition
+
+Three ways the worker process can stop. Two are signals; the third it chooses
+itself.
+
+**On `SIGTERM` / `SIGINT`** — a deploy, a restart, a host recycling a container:
+
+1. `worker.close()` — stops accepting new jobs, then **waits for the active job
+   to finish**. Never `close(true)`, which would abandon the running job — the
+   precise outcome the handler exists to prevent.
+2. `redis.quit()` on the process's own shared client, inside its own `try`: a
+   failed QUIT cannot turn a clean shutdown into a failed one.
+3. `process.exit(0)`, explicitly — the `pg.Pool` behind the Prisma client is
+   module-scoped and not exported, so its open connections would otherwise keep
+   the event loop alive indefinitely.
+
+Concurrent signals are safe: the handler stores the in-flight shutdown promise
+and returns it rather than starting a second close.
+
+**Why it matters:** without this the process dies mid-job still holding its Redis
+lock. BullMQ cannot distinguish an abandoned job from a slow one, so it waits out
+`lockDuration` (30 s default), the stalled checker returns the job to `wait`, and
+it runs again from the top. That replay is *safe* — the extraction write is an
+upsert on `(emailId, userId)` — but not free: it redoes the whole job, and
+because `maxStalledCount` defaults to 1, a job interrupted twice fails
+permanently and silently.
+
+**On drain** (batch mode only) — and this is the part worth understanding,
+because the obvious implementation is wrong:
+
+BullMQ's `drained` event means *a fetch found nothing immediately available*. It
+is a statement about the wait list, **not** about the queue. A job that fails with
+attempts remaining moves to the DELAYED set, and if nothing else is waiting the
+very next thing the worker does is emit `drained`. Exiting on the event alone
+would abandon a pending retry.
+
+So the event is only the **trigger**; the **decision** is a `getJobCounts` over
+six states:
+
+```
+waiting + active + delayed + paused + prioritized + waiting-children
+        │
+        ├─ > 0  → return; do nothing. Fetching any job clears BullMQ's internal
+        │         drained flag, so the next true drain emits again.
+        └─ = 0  → shutdown("Queue email-processing drained") → exit 0
+```
+
+`completed` and `failed` are excluded deliberately: with `removeOnFail: false`
+the failed set is permanent, so counting it would mean the queue is never drained
+and the process never exits.
+
+`active` is counted even at concurrency 1, where this worker cannot be holding a
+job when `drained` fires. It guards the *other* case: a previous run killed
+without draining leaves its job in `active` with an expired lock until the
+stalled checker returns it.
+
+If the count itself fails, the error is logged and the process **stays up** —
+crashing there would abandon a held job outside the graceful path.
+
+**A job arriving between the counts coming back zero and the close completing is
+not handled, because it cannot be.** The web service is a live producer and no
+lock closes that window. It costs nothing: the job is durable in Redis, its
+deterministic id prevents duplication, and the next run picks it up.
+
+### Batch behaviour, precisely
+
+| Question | Answer |
+|---|---|
+| Batch size | **None.** There is no batching primitive. The worker pulls jobs one at a time at BullMQ's default concurrency of **1** |
+| Sequential or concurrent | Sequential, one job at a time |
+| One item fails | It does not stop the run. The job retries per its own options (`attempts: 3`, exponential backoff from 2000 ms) and the worker moves on |
+| Failure blocks later items | No |
+| Unbounded work | Bounded by the drain condition plus the 30-minute workflow timeout, not by a batch size |
+
+Two exceptions to ordinary retry, both deliberate: an **ownership mismatch**
+between the payload's `userId` and the persisted Email's throws
+`UnrecoverableError` — no retry can fix a forged payload or a broken invariant —
+and a Prisma **`P2002`** is caught and treated as success, since the desired end
+state already exists.
+
+## 11.5 Gmail timeouts and reauthentication
+
+**Every** outbound Gmail and Google OAuth request is bounded, from one place:
+`createOAuthClient` sets `transporterOptions: { timeout: GMAIL_REQUEST_TIMEOUT_MS }`
+(10 s). google-auth-library builds its transporter from those options and uses
+that single gaxios instance for both halves of every operation — its own token
+refresh and the Gmail call itself — so this bounds token refresh, every API
+request, every page of a paginated walk, and attachment downloads, without
+repeating a deadline at six call sites where one omission would silently reopen
+the hole.
+
+gaxios turns `timeout` into `AbortSignal.timeout()`, which **aborts the
+underlying fetch**. That distinction matters: abandoning the promise instead
+would leave the socket open and the scheduler still holding work that never ends.
+
+**Per attempt, not per operation.** gaxios re-arms the timeout on each retry and
+caps retries independently, so one HTTP operation's worst case is roughly three
+attempts plus backoff — about 30 s. That is comfortably inside the 120 s sync
+interval, so a stalled mailbox is detected and the cycle finishes within one
+period. **Timeouts are not retried indefinitely.**
+
+### Three distinct failure classes — the code separates them, so should you
+
+| Class | Example | What happens |
+|---|---|---|
+| **Transient** | timeout, network, `429`, any `5xx` | gaxios retries at the transport layer. The mailbox fails this cycle, is logged, and is retried next cycle. Nothing is persisted |
+| **Expired cursor** | `404` on `users.history.list` | Classified specifically and handled by re-bootstrapping to a full sync. Not an error condition |
+| **Permanent auth failure** | HTTP **400** carrying Google's **`invalid_grant`** | `reauthRequiredAt` is stamped on the mailbox, then the error is rethrown unchanged |
+
+**Only that last one sets `reauthRequiredAt`** — `isPermanentGmailAuthFailure` is
+true for exactly `status === 400 && googleError === "invalid_grant"` and false for
+everything else. `401` is excluded because it is routinely cured by the library's
+own token refresh; `403` is excluded because it covers rate limiting as readily as
+a scope error; a `400` without `invalid_grant` is this application's bug, not a
+revoked authorization. Excluding a mailbox on any of those would strand a healthy
+user — a worse outcome than futile retrying.
+
+### What `reauthRequiredAt` actually does
+
+Persisted as a nullable `DateTime` on `GmailAccount`. It is a timestamp rather
+than a boolean so it records *when* authentication broke, and `NULL` means
+eligible.
+
+- **The background scheduler skips the mailbox.** `getAllGmailAccounts` filters
+  `reauthRequiredAt: null`, so the mailbox drops out of automatic sync.
+- **An explicit user-triggered `POST /gmail/sync` still attempts it.**
+  `getGmailAccountsByUser` filters by owner only. A user who has just reconnected
+  in another tab is not blocked by a stale flag.
+- **The account is *not* disconnected.** The row stays, and the refresh token is
+  deliberately left in place — Google has already invalidated it, so deleting it
+  protects nothing and only makes reconnect harder to reason about.
+- **The user must re-authorize the mailbox.** Reconnecting through the OAuth flow
+  writes a new refresh token and clears the flag in the same update, restoring
+  scheduler eligibility. `historyId` is deliberately untouched, so sync resumes
+  incrementally rather than re-reading the mailbox.
+- **A successful sync also clears it**, written only when the flag was actually
+  set, to keep the ordinary success path at one write.
+
+## 11.6 The email reconciler
+
+**The invariant it restores:** *every persisted Email eventually reaches the
+queue.*
+
+`createEmail` commits to Postgres, then `enqueueEmailProcessing` writes to Redis.
+The two stores cannot share a transaction, so a failed enqueue — Redis
+unreachable during ingestion, most obviously — leaves a committed row at
+`processingStatus: "pending"` with no job behind it. Nothing else recovers that
+state: the Gmail dedupe short-circuits every replay of the message, the sync
+watermark has already advanced past it, and an email ingested through
+`POST /email` has no Gmail message to replay at all. The email was stored and
+never processed, with nothing recording that anything had gone wrong.
+
+**It is not a health check.** It repairs exactly one inconsistency.
+
+| | |
+|---|---|
+| Where it runs | The **web process**, started from `server.ts` — not the worker |
+| Interval | `EMAIL_RECONCILE_INTERVAL_MS`, default 60 s, plus one sweep immediately at startup |
+| What it scans | `Email` rows with `processingStatus: "pending"` **and** `createdAt < now − EMAIL_RECONCILE_MIN_AGE_MS` (default 5 min) |
+| Why the age cutoff | A row stays `pending` until a worker picks it up, so a legitimately queued email is indistinguishable from an orphan until enough time has passed. The cutoff must clear a normal backlog or the sweep chases work already in flight |
+| What it does | Re-enqueues each row through the **normal producer**, carrying the row's own `userId`. It never writes `processingStatus` — the worker owns that lifecycle |
+| Failure handling | Per-row `try/catch`; one row's failure never aborts the sweep. A failed row is left `pending` and stays eligible next pass |
+| Overlap | An `isRunning` guard skips a sweep if the previous one is still going |
+| Its own timer | Deliberately separate from the Gmail scheduler. Recovery must not depend on the component most likely to be unhealthy — and a stalled Gmail request can leave that scheduler's guard set for the life of the process |
+
+**Duplicate-processing risk, and what actually protects against it.** The
+reconciler cannot see Redis, so a row whose enqueue *did* succeed is
+indistinguishable from an orphan and will be re-enqueued. That is intentional.
+`enqueueEmailProcessing` uses `jobId: email-${id}`, and BullMQ refuses a second
+`add` while a job with that id exists, so the duplicate collapses into the job
+already queued. Checking Redis first would race the exact window the reconciler
+exists to close.
+
+> **This is at-least-once delivery with eventual processing — not exactly-once.**
+> Exactly-once is not achievable across Postgres and Redis and is not claimed.
+> The deterministic job id suppresses duplicate *jobs*; the one non-idempotent
+> side effect that survives a genuine double run is handled at the database, by
+> the unique constraint that makes `createExtraction` an upsert.
+
+**Operationally:** because the reconciler runs in the always-on web service while
+the worker runs only on demand, a `pending` backlog older than five minutes is
+normal between drains. The reconciler will re-enqueue those rows on every sweep,
+and every one of those enqueues collapses into the existing job. That is
+harmless, and it is not evidence of a problem.
+
+## 11.7 Operational failure modes
+
+| Symptom | Most likely cause | Where to look |
+|---|---|---|
+| Emails ingested, no Events appear | No drain has been run — expected between drains | [§11.3](#113-the-github-actions-drain) — dispatch the workflow |
+| `bull:email-processing:wait` keeps growing | Same | §11.3 |
+| `attachment-processing` grows and never drains | No production attachment consumer exists | [§11.2](#112-what-the-web-service-does--and-does-not--start) |
+| One mailbox stops syncing, others fine | `reauthRequiredAt` is set — the user must reconnect | [§11.5](#115-gmail-timeouts-and-reauthentication) |
+| All mailboxes stop syncing | Scheduler guard stuck, or the account query failed | §11.2; check for `[gmail-scheduler] Run failed` |
+| Drain workflow times out at 30 min | Wedged Redis or a paused queue — the worker could not reach a zero count | §11.4 |
+| Drain exits immediately, queue non-empty | Jobs are in `failed`, which is excluded from the drain condition by design | §11.4 |
+| Extraction quality lower than local | Production runs regex-only: no `USE_AI`, no `OPENAI_API_KEY` | [§3.2](#32-backend--optional) |
+| Repeated `[email-reconciler] Sweep failed` | Database reachability from the web service | [§11.6](#116-the-email-reconciler) |
+
+**Dispatching a drain** — the only routine production operation: Actions → *Production Email Worker* → *Run workflow* → approve the `production-worker` environment prompt. It connects to production Redis and Postgres, which is why it is manual, gated, and never triggered by a commit.
+
+---
+
 ## Related documentation
 
+- [`docs/02_Backend/Gmail_Synchronization.md`](02_Backend/Gmail_Synchronization.md) — the sync algorithm, its cursor model, and its reliability guarantees
+- [`docs/03_Development/Development_Environment.md`](03_Development/Development_Environment.md) — running the same processes locally
 - [`docs/postmortems/vercel-render-oauth-deployment.md`](postmortems/vercel-render-oauth-deployment.md) — full investigation and root cause analysis
 - [`docs/runbooks/migrations.md`](runbooks/migrations.md) — Prisma migration procedures
 - [`docs/runbooks/troubleshooting.md`](runbooks/troubleshooting.md) — general troubleshooting
