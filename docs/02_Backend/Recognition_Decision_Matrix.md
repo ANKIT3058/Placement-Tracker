@@ -2,7 +2,11 @@
 
 Engineering Handbook — Backend
 Status: canonical. Companion to `Event_Intelligence.md`.
-Reflects the implementation **after AC-1** (loose-tier temporal bound).
+Reflects the implementation **after AC-1 through AC-4** — loose-tier temporal
+bound (AC-1 / `8edf87a`), identity-first recognition (AC-2 / `54584db`), manual
+authority (AC-3 / `7c006a4`), and placeholder-company rejection (AC-4 /
+`7c006a4`). Rows recording the defects those changes closed are retained as
+history and labelled as such; the residual risks that remain are in §5.
 
 `Event_Intelligence.md` explains how the system reasons. This document is the
 exhaustive truth table of what it actually decides. Every row states the
@@ -17,8 +21,10 @@ differ. Where they differ, the row is the authoritative bug report.
 before any candidate is considered. It gates review and protects incumbents.
 
 **Confidence alignment (`c`)** is a *matching* term: `min(incoming.confidence,
-candidate.confidence)`. It contributes to tier-2 scoring only. `C` and `c` are
-different quantities and are not interchangeable.
+candidate.confidence)`. It contributes to tier-2 scoring only, and since AC-2 it
+ranks candidates that have already been admitted rather than deciding admission —
+except in the one band recorded as residual risk 2. `C` and `c` are different
+quantities and are not interchangeable.
 
 **Δ** is the absolute difference in days between the observation's date and a
 candidate's date.
@@ -30,21 +36,36 @@ candidate's date.
 | Constant | Value | Governs |
 |---|---|---|
 | `CONFIDENCE_THRESHOLD` | 0.60 | Trusted vs. review |
-| Tier-2 candidate window | ±3 days | Which events are scored |
-| Tier-2 acceptance threshold | 0.50 | Soft match accepted |
+| Tier-2 candidate window | ±3 days | Which events are considered |
+| Tier-2 identity gate | AGREES / UNKNOWN / CONTRADICTS | Which considered events are scored (**AC-2**) |
+| Tier-2 acceptance threshold | 0.50 | Soft match accepted, among those scored |
 | `LOOSE_MATCH_WINDOW_DAYS` | 30 | Tier-3 candidate window (**AC-1**) |
 | Tier-3 uniqueness rule | exactly 1 | Loose match accepted |
 | Tier-3 assigned confidence | 0.60 | Fixed, not computed |
 
 ### Recognition order
 
-Tier 1 (exact key) → Tier 2 (soft, scored) → Tier 3 (loose, unique) → no match.
-Each tier short-circuits on success. **Tier 2 filters candidates by company and
-date only — not by round.** Tier 3 filters by company, round, and date.
+Tier 1 (exact key) → Tier 2 (soft: gated, then scored) → Tier 3 (loose, unique)
+→ no match. Each tier short-circuits on success.
+
+**Tier 2 filters candidates by company and date only — not by round.** That is
+deliberate and unchanged by AC-2: the engine has to *see* a contradicting
+candidate in order to refuse it and to record that it did. The round is applied
+immediately afterwards, in code rather than in SQL, as the identity gate. Tier 3
+filters by company, round, and date, all in SQL — which is why its round
+comparison is exact equality rather than the three-valued relation (residual
+risk 3).
 
 ---
 
 ## 1. Scoring model
+
+**Admission precedes scoring (AC-2 / ADR-006).** Since AC-2 the score decides
+nothing about identity. A tier-2 candidate is first classified against the
+observation's round — AGREES, UNKNOWN, or CONTRADICTS — and a CONTRADICTS
+candidate is vetoed before the scorer is called. The model below therefore
+describes **ranking among admitted candidates**, and its threshold is a similarity
+floor rather than an identity gate.
 
 ```
 score = 0.5·dateScore + 0.3·roundScore + 0.2·c        accept iff score ≥ 0.5
@@ -58,21 +79,31 @@ score = 0.5·dateScore + 0.3·roundScore + 0.2·c        accept iff score ≥ 0.
 
 ### Resolved score table
 
-| Round | Δ | Score | Range over c ∈ [0,1] | Accepted? |
-|---|---|---|---|---|
-| Same | 0 | `0.80 + 0.2c` | 0.80 – 1.00 | **Always** |
-| Same | 1 | `0.65 + 0.2c` | 0.65 – 0.85 | **Always** |
-| Same | 2–3 | `0.55 + 0.2c` | 0.55 – 0.75 | **Always** |
-| Same | >3 | 0 | 0 | Never (falls to tier 3) |
-| **Different** | **0** | **`0.50 + 0.2c`** | **0.50 – 0.70** | **Always ⚠ D-1** |
-| Different | 1 | `0.35 + 0.2c` | 0.35 – 0.55 | **iff c ≥ 0.75 ⚠ D-1** |
-| Different | 2–3 | `0.25 + 0.2c` | 0.25 – 0.45 | Never |
-| Different | >3 | 0 | 0 | Never |
+The rows are unchanged — no weight, band or threshold was altered by AC-2 — but
+the `Different` rows now describe two different situations, and only one of them
+is still reachable.
 
-**The decisive arithmetic:** the date term alone is worth exactly the
-acceptance threshold. An exact date match therefore satisfies the bar with **zero
-contribution from the round**, which is an identity attribute. This is D-1, and
-it is the reason two different rounds run on one day merge.
+| Round relation | Δ | Score | Range over c ∈ [0,1] | Accepted? |
+|---|---|---|---|---|
+| AGREES | 0 | `0.80 + 0.2c` | 0.80 – 1.00 | **Always** |
+| AGREES | 1 | `0.65 + 0.2c` | 0.65 – 0.85 | **Always** |
+| AGREES | 2–3 | `0.55 + 0.2c` | 0.55 – 0.75 | **Always** |
+| AGREES | >3 | 0 | 0 | Never (falls to tier 3) |
+| **CONTRADICTS** | any | — | — | **Never — vetoed before scoring** *(was ⚠ D-1)* |
+| **UNKNOWN** | **0** | **`0.50 + 0.2c`** | **0.50 – 0.70** | **Always — residual risk 1** |
+| UNKNOWN | 1 | `0.35 + 0.2c` | 0.35 – 0.55 | **iff c ≥ 0.75 — residual risk 2** |
+| UNKNOWN | 2–3 | `0.25 + 0.2c` | 0.25 – 0.45 | Never |
+| UNKNOWN | >3 | 0 | 0 | Never |
+
+**The decisive arithmetic, and what changed about it.** The date term alone is
+worth exactly the acceptance threshold, so an exact date match satisfies the bar
+with **zero contribution from the round**. That arithmetic is untouched. What AC-2
+removed is the ability of a *contradicted* round to reach it — which was D-1, and
+which is why two different rounds run on one day no longer merge. Where the round
+is merely **unstated**, the same arithmetic still admits; ADR-006 rules that
+silence is not denial, so this is a consequence of a stated decision rather than a
+defect. Both UNKNOWN rows above are recorded in *Current residual recognition
+risks*.
 
 ---
 
@@ -106,30 +137,48 @@ date, which happens when the identity key differs by formatting or company
 casing. Tier 2 then recovers it. This is the safety net that makes D-7 tolerable
 today rather than catastrophic.
 
-### B. Same company, different round — where the engine is wrong
+### B. Same company, different round — where the engine was wrong
 
-Trusted, one candidate.
+Trusted, one candidate. **Both rounds resolved and different**, so the identity
+relation is CONTRADICTS. The `Score` column is retained as history: since AC-2 no
+score is computed for any row in this block, because the candidate is disqualified
+before scoring.
 
-| # | Δ | Tier | Score | vs 0.5 | Decision | Expected | Current | Differ |
+| # | Δ | Tier | Score *(pre-AC-2)* | vs 0.5 | Decision | Expected | Current | Differ |
 |---|---|---|---|---|---|---|---|---|
-| B1 | **0** | 2 | **0.50–0.70** | **pass** | CREATE | CREATE | **UPDATE** | **YES ⚠ D-1** |
-| B2 | 1, c ≥ 0.75 | 2 | 0.50–0.55 | pass | CREATE | CREATE | **UPDATE** | **YES ⚠ D-1** |
-| B3 | 1, c < 0.75 | 2→3 | 0.35–0.49 | fail | CREATE | CREATE | CREATE | No |
-| B4 | 2–3 | 2→3 | 0.25–0.45 | fail | CREATE | CREATE | CREATE | No |
+| B1 | **0** | 2 | 0.50–0.70 | pass | CREATE | CREATE | CREATE — vetoed, never scored | No *(was ⚠ D-1)* |
+| B2 | 1, c ≥ 0.75 | 2 | 0.50–0.55 | pass | CREATE | CREATE | CREATE — vetoed, never scored | No *(was ⚠ D-1)* |
+| B3 | 1, c < 0.75 | 2→3 | 0.35–0.49 | fail | CREATE | CREATE | CREATE — vetoed, never scored | No |
+| B4 | 2–3 | 2→3 | 0.25–0.45 | fail | CREATE | CREATE | CREATE — vetoed, never scored | No |
 | B5 | 31 | 3 | no candidate | — | CREATE | CREATE | CREATE | No |
 
-**Why B1/B2 are wrong.** Round is one of three attributes that individuate a
+**Why B1/B2 were wrong.** Round is one of three attributes that individuate a
 placement activity. A pre-placement talk and an online assessment on the same day
-are two activities; merging them destroys one. Tier 2 does not filter candidates
-by round, and the score permits acceptance with `roundScore = 0`. The update then
-writes the observation's time and venue onto the wrong Event — and since
-`detectChanges` never compares round, the Event keeps its original round label,
+are two activities; merging them destroys one. Tier 2 did not filter candidates
+by round, and the score permitted acceptance with `roundScore = 0`. The update
+then wrote the observation's time and venue onto the wrong Event — and since
+`detectChanges` never compares round, the Event kept its original round label,
 leaving no trace that a merge occurred.
 
-**Note on B3/B4:** these reach the correct outcome by accident of arithmetic, not
-by design. Tier 3 excludes them properly (its query filters on round), but tier 2
-declined only because the score fell short. Raising confidences would flip B3
-into a merge.
+**How they are closed (AC-2 / `54584db`).** The round is now classified before any
+scoring: AGREES, UNKNOWN or CONTRADICTS. Every row in this block is CONTRADICTS,
+so the candidate is vetoed by the identity gate and never reaches the scorer. The
+outcome is CREATE regardless of Δ or confidence, which is what `Expected` always
+required.
+
+**Note on B3/B4:** these previously reached the correct outcome by accident of
+arithmetic, not by design — tier 3 excluded them properly (its query filters on
+round), but tier 2 declined only because the score fell short, and raising
+confidences would have flipped B3 into a merge. That accident is no longer
+load-bearing: B3 and B4 are now refused for the same categorical reason as B1 and
+B2, and confidence cannot flip any of them.
+
+> **The block's scope, stated precisely.** These rows govern a **contradicting**
+> round. They say nothing about an **unstated** one: where either side's round is
+> unresolved the relation is UNKNOWN, the candidate stays eligible, and the
+> pre-AC-2 arithmetic in the `Score` column still applies. That case is not a
+> defect and has no row here; it is recorded in *Current residual recognition
+> risks*.
 
 ### C. Different company
 
@@ -152,25 +201,33 @@ an incident.
 | D1 | Zero candidates anywhere | — | CREATE | CREATE | CREATE | No |
 | D2 | Tier 3: 2+ candidates in window | 3 | CREATE (ambiguity → no claim) | CREATE | CREATE | No |
 | D3 | Tier 3: 2 all-time, 1 in window | 3 | UPDATE | UPDATE | UPDATE | No ✅ (AC-1) |
-| D4 | Tier 2: several candidates | 2 | highest score wins | best *identity* | **best score, which can be the wrong Event** | **YES ⚠ D-1** |
+| D4 | Tier 2: several candidates | 2 | highest score among *admitted* candidates | best *identity* | best score among survivors; contradicting rounds are no longer among them | No *(was ⚠ D-1)* |
 
 **D3 is the intentional AC-1 behaviour change.** Before AC-1 the far candidate
 made the set ambiguous (count 2), so no match was claimed and a duplicate was
 created. The far candidate was never plausible; excluding it removes a spurious
 ambiguity. Narrowing made the engine *more* permissive here, and correctly so.
 
-**D4 is D-1 amplified.** Because `c = min(incoming, candidate)`, a candidate's
-own stored confidence raises its score. Worked example — observation on day 0,
-`C = 0.8`:
+**D4 was D-1 amplified, and is closed by the same fix.** Because
+`c = min(incoming, candidate)`, a candidate's own stored confidence raises its
+score. Worked example — observation on day 0, `C = 0.8`:
 
-| Candidate | Round | Δ | c | Score |
-|---|---|---|---|---|
-| Correct round, stored conf 0.3 | same | 2 | 0.3 | 0.55 + 0.06 = **0.61** |
-| Wrong round, stored conf 0.9 | different | 0 | 0.8 | 0.50 + 0.16 = **0.66** |
+| Candidate | Round | Δ | c | Score *(pre-AC-2)* | Now |
+|---|---|---|---|---|---|
+| Correct round, stored conf 0.3 | same | 2 | 0.3 | 0.55 + 0.06 = **0.61** | scored; wins |
+| Wrong round, stored conf 0.9 | different | 0 | 0.8 | 0.50 + 0.16 = **0.66** | vetoed; never scored |
 
-The wrong-round candidate wins. A well-established Event can out-compete the
-correct one purely by being more confident, and a nearby correct match does not
-protect against it.
+The wrong-round candidate used to win: a well-established Event could out-compete
+the correct one purely by being more confident, and a nearby correct match did not
+protect against it. Since AC-2 it is not a candidate at all, so the correct round
+wins at 0.61 — the outcome `Expected` always specified. This is the case that
+makes the ordering matter rather than the arithmetic: ranking was never the
+problem, admission was.
+
+**What D4 still shows.** Ranking among admitted candidates is decided by score,
+and the scorer keeps the first strict maximum. Where several survivors tie, the
+tier selects rather than refusing — unlike tier 3, which refuses on ambiguity.
+That is the tiers' stated division of labour, not a defect.
 
 ### E. Confidence
 
@@ -182,7 +239,7 @@ protect against it.
 | E4 | `C ≥ 0.6`, matched, `C < existing.confidence` | REJECT | no write | no write | No |
 | E5 | `C ≥ 0.6`, matched, no field differs | NO-OP | no write, no history | no write, no history | No |
 | E6 | `C ≥ 0.6`, matched, `C ≥ existing`, fields differ | UPDATE | apply + record | apply + record | No |
-| E7 | `C = 1.0`, matched Event is **confirmed** (conf 1.0) | REJECT | human outranks inference | **UPDATE — overwrites the human decision** | **YES ⚠ D-9 (new)** |
+| E7 | `C = 1.0`, matched Event is **confirmed** (conf 1.0) | REJECT | human outranks inference | REJECT — returned early by the confirmed-status guard | No *(was ⚠ D-9)* |
 
 **E4/E5/E6 are the engine at its best** — the confidence comparator and
 field-level minimality both behave exactly as the handbook specifies.
@@ -192,14 +249,30 @@ observation produces a duplicate or vanishes entirely depends on whether its
 identity key happens to collide, because creation is idempotent on that key. A
 near-miss yields a duplicate; an exact hit yields silence.
 
-**E7 is a defect not previously documented.** Manual confirmation sets an Event's
-confidence to exactly 1.0. The incumbent guard is `newConfidence < existingConfidence`
-— strictly less. A maximally-confident extraction also scores exactly 1.0
-(reachable: known company, explicit date, explicit unestimated time, explicit
-venue → 0.99 + 0.05 bonus → clamped to 1.0, no penalties). `1.0 < 1.0` is false,
-so the update proceeds: it rewrites fields, and if the date differs it sets status
-`rescheduled`, discarding `confirmed`. **A human decision can be silently
-overwritten by inference** — a direct violation of `Event.md` invariant 4. See §5.
+**E7 was a defect surfaced by this matrix, and is now closed by a guard rather
+than by a comparator change (AC-3 / `7c006a4`).**
+
+*The original finding, which remains true of the comparator.* Manual confirmation
+sets an Event's confidence to exactly 1.0. The incumbent guard is
+`newConfidence < existingConfidence` — strictly less. A maximally-confident
+extraction also scores exactly 1.0 (reachable: known company, explicit date,
+explicit unestimated time, explicit venue → 0.99 + 0.05 bonus → clamped to 1.0,
+no penalties). `1.0 < 1.0` is false, so that comparator does not reject the
+update. **That is still the case: the comparator was deliberately not changed.**
+
+*What closed the defect.* A categorical guard was added ahead of it: the update
+path returns the existing Event unchanged when its status is `confirmed`, before
+change detection and before the confidence comparison is reached. Authority is
+treated as a kind, not a quantity — which is the point, because confidence 1.0
+cannot distinguish "a person settled this" from "the extractor was very sure".
+Tightening the comparator to `<=` was rejected precisely because it would express
+that intent as a numeric coincidence, and would additionally reject equal-confidence
+updates between two inferences, which is unrelated behaviour.
+
+**Original comparator finding remains true, but its previously identified
+overwrite consequence is closed by the confirmed-status guard.** `Event.md`
+invariant 4 is upheld. The `<` comparator is retained in §4 as a live
+implementation detail, not as a defect. See §5.
 
 ### F. Venue
 
@@ -225,18 +298,33 @@ respected and punished.
 | # | Case | Decision | Expected | Current | Differ |
 |---|---|---|---|---|---|
 | G1 | No company extracted | ABANDON | recorded as ignored | ignored, **then overwritten to `completed`** | **YES ⚠ D-4** |
-| G2 | Company extracted as `"unknown"` | ABANDON | treated as no company | **passes the gate; may CREATE an Event named "unknown"** | **YES ⚠ D-10 (new)** |
+| G2 | Company extracted as `"unknown"` | ABANDON | treated as no company | ABANDON — rejected by `isResolvedCompany` | No *(was ⚠ D-10)* |
 | G3 | No date, or date not `YYYY-MM-DD` | ABANDON | recorded as ignored | ignored, then overwritten | **YES ⚠ D-4** |
 
-**G2 is a second new finding.** The pattern extractor substitutes the literal
-string `"unknown"` when no valid company is found. The confidence scorer treats
-`"unknown"` as a *missing* company (score 0), but the viability gate and the
-completeness bonus both test truthiness, and `"unknown"` is truthy. Net effect: a
-typical such observation reaches roughly `C ≈ 0.69`, clears the trusted threshold,
-and creates a real Event whose company is `"unknown"`. That Event then becomes a
-matching candidate for every future `"unknown"` observation, so unrelated
-activities accumulate against one record — a merge vector with a different root
-cause from D-1.
+**G2 was a second new finding, and is now closed (AC-4 / `7c006a4`).**
+
+*The defect.* The pattern extractor substitutes the literal string `"unknown"`
+when no valid company is found. The confidence scorer treats `"unknown"` as a
+*missing* company (score 0), but the viability gate and the completeness bonus
+both tested truthiness, and `"unknown"` is truthy. Net effect: a typical such
+observation reached roughly `C ≈ 0.69`, cleared the trusted threshold, and created
+a real Event whose company was `"unknown"`. That Event then became a matching
+candidate for every future `"unknown"` observation, so unrelated activities
+accumulated against one record — a merge vector with a different root cause from
+D-1.
+
+*The fix.* The gate no longer tests truthiness. It calls `isResolvedCompany`,
+which rejects a non-string, an empty or whitespace-only value, and the `"unknown"`
+sentinel itself. The placeholder is therefore treated as a missing company, which
+is what the Decision Model already specified for this case — no new outcome was
+introduced. Because the gate runs before the identity key is generated and before
+any candidate query, the placeholder never reaches the key, the candidate set, or
+the database.
+
+*Unchanged by this fix:* the completeness bonus still tests truthiness, so a
+`"unknown"` company still contributes the +0.05 bonus while scoring 0. That
+affects the confidence figure only. It cannot produce an Event, because the gate
+above now refuses the observation before the figure is used.
 
 ---
 
@@ -256,13 +344,14 @@ Event status. Guards in brackets.
 | `scheduled` / `rescheduled` | NO-OP `[no field differs]` | *unchanged* | No — by design |
 | `review` | manual confirmation | `confirmed` (conf → 1.0, reason cleared) | **No ⚠ G-4** |
 | `scheduled` / `rescheduled` | manual confirmation | `confirmed` | **No ⚠ G-4** |
-| `confirmed` | UPDATE `[C = 1.0]` | `scheduled` / `rescheduled` | Yes | **⚠ D-9** |
-| `confirmed` | UPDATE `[C < 1.0]` | *unchanged* (rejected) | No |
+| `confirmed` | UPDATE, any `C` | *unchanged* (rejected by the status guard) | No — *(was ⚠ D-9 at `C = 1.0`)* |
 
-**Two observations.** `confirmed` is intended to be terminal with respect to
-inference; it is terminal only against `C < 1.0`. And the two transitions a human
-causes are the only two that write no history — the system forgets exactly the
-changes it should remember best.
+**Two observations.** `confirmed` is now terminal with respect to inference at
+every confidence, because the guard tests status rather than the confidence
+comparison — closing D-9 (AC-3 / `7c006a4`). Its two rows collapse into one, since
+`C` no longer distinguishes them. And the two transitions a human causes remain
+the only two that write no history — the system forgets exactly the changes it
+should remember best (**G-4**, still open).
 
 ---
 
@@ -271,11 +360,14 @@ changes it should remember best.
 | Gate | Comparison | Operator | Consequence of the operator |
 |---|---|---|---|
 | Trusted vs. review | `C < 0.6` | strict `<` | `C = 0.6` exactly is trusted |
-| Tier-2 acceptance | `score ≥ 0.5` | inclusive `≥` | a bare exact-date match (0.5) is accepted → D-1 |
+| **Tier-2 identity gate** | round relation ≠ CONTRADICTS | categorical | runs before scoring; a contradicted round is never scored (AC-2) |
+| Tier-2 acceptance | `score ≥ 0.5` | inclusive `≥` | a bare exact-date match (0.5) is accepted — reachable now only when the round is UNKNOWN (residual risk 1) |
 | Tier-2 best candidate | `score > bestScore` | strict `>` | first candidate wins ties — order-dependent |
 | Tier-3 uniqueness | `count === 1` | equality | 0 or 2+ → no claim |
 | Tier-3 window | `|Δ| ≤ 30` | inclusive | Δ = 30 matches, Δ = 31 does not |
-| Incumbent protection | `newC < existingC` | strict `<` | equal confidence **passes** → D-9 |
+| **Manual authority** | `status === "confirmed"` | categorical | returns early, before change detection and before the comparison below (AC-3) |
+| Incumbent protection | `newC < existingC` | strict `<` | equal confidence **passes** — retained deliberately; the D-9 consequence is closed by the guard above |
+| **Company viability** | `isResolvedCompany(company)` | predicate | rejects empty, whitespace and the `"unknown"` sentinel before the key is built (AC-4) |
 | Change detection | value differs | per field | date · time · venue **only** |
 
 **Fields that can never change through automated update:** company, round.
@@ -286,22 +378,60 @@ looks internally consistent.
 
 ---
 
-## 5. Remaining inconsistencies after AC-1
+## 5. Defect register
 
-Ordered by severity. **D-9** and **D-10** are new, surfaced by constructing this
-matrix; the rest carry forward from `Event_Intelligence.md`.
+**D-9** and **D-10** were new when this matrix was constructed; the rest carry
+forward from `Event_Intelligence.md`. The register is split into what has since
+been closed and what remains. Closed entries keep their original defect text — the
+reasoning that identified them is what constrains changes to these paths — and
+gain the fixing commit and the mechanism that closed them.
+
+### Closed
+
+| ID | Original defect | Rows | Closed by | Current mechanism |
+|---|---|---|---|---|
+| **D-1** | Tier 2 accepts a same-date match with a mismatched round; date term alone meets the threshold | B1, B2, D4 | **AC-2 / `54584db`** | Round is classified AGREES / UNKNOWN / CONTRADICTS before scoring; a CONTRADICTS candidate is vetoed and never scored, so no score can admit it. Weights and threshold unchanged. |
+| **D-2** | Weakest tier applies no date bound; a sole same-name candidate matches at any temporal distance | D3, B5 | **AC-1 / `8edf87a`** | The tier's candidate query requires date and window arguments; recognition passes ±30 days (`LOOSE_MATCH_WINDOW_DAYS`). |
+| **D-9** | Incumbent guard is strict `<`, so a confidence-1.0 extraction overwrites a human confirmation | E7 | **AC-3 / `7c006a4`** — *closed by guard* | A categorical `status === "confirmed"` check returns early, ahead of change detection and of the comparator. **The comparator itself was deliberately not changed**, so the original finding remains true of it; the overwrite consequence is what closed. |
+| **D-10** | `"unknown"` company passes the viability gate and can create a matchable Event | G2 | **AC-4 / `7c006a4`** | The gate calls `isResolvedCompany` instead of testing truthiness, rejecting the sentinel before the identity key, the candidate queries and any write. |
+
+### Open
+
+Ordered by severity.
 
 | ID | Defect | Rows | Severity |
 |---|---|---|---|
-| **D-1** | Tier 2 accepts a same-date match with a mismatched round; date term alone meets the threshold | B1, B2, D4 | **Critical** — active false-merge path |
-| **D-9** | *(new)* Incumbent guard is strict `<`, so a confidence-1.0 extraction overwrites a human confirmation | E7 | **Critical** — violates `Event.md` invariant 4 |
-| **D-10** | *(new)* `"unknown"` company passes the viability gate and can create a matchable Event | G2 | **High** — second merge vector |
 | **D-3** | Untrusted observations discard recognition; duplicate, or silent drop on key collision | E2, E3 | High |
 | **G-4** | Manual confirmation writes no history | state table | High |
 | **D-7** | Identity key unnormalised; company casing divergence creates duplicates | C2 | Medium |
 | **D-5** | Confidence penalties double-count absences and punish venue silence the scorer neutralises | F4 | Medium |
 | **D-4** | `ignored` outcome overwritten by `completed` | G1, G3 | Medium |
 | **G-2/G-3** | No detection of false merges or duplicates | all | Medium |
+
+### Current residual recognition risks
+
+Distinct from both tables above, and deliberately **not** assigned `D-n` numbers:
+a `D-n` marks implementation that contradicts stated intent, and each of these
+follows from intent the architecture states and defends. They are recorded so that
+closing D-1 and D-2 is not read as "recognition is now safe".
+
+The dividing line is ADR-006's: **contradiction is not silence.** D-1 was a
+*contradicted* identity attribute overruled by a score. Each risk below arises
+where an attribute was never *stated*.
+
+| # | Risk | Rows |
+|---|---|---|
+| **1** | Tier 2 admits on date proximity alone when the round is UNKNOWN on either side: Δ=0 scores exactly 0.50, meeting the threshold with zero contribution from stage and zero from confidence | §1 UNKNOWN Δ=0 |
+| **2** | Confidence participates in admission in one narrow band: with UNKNOWN round and Δ=1, the candidate is admitted iff `min(incoming C, event C) ≥ 0.75` | §1 UNKNOWN Δ=1 |
+| **3** | Tier 3 does not apply the semantic identity gate — it compares round by exact SQL equality, so two records carrying the unresolved-round sentinel compare equal, where tier 2 would classify the pair as UNKNOWN | D2, D3 |
+
+Risk 3 is a real difference in identity protection between the tiers. It is
+recorded as such rather than as a regression: tier 3's identity claim has always
+rested on uniqueness rather than on attribute agreement, and AC-1 bounded that
+claim in time without changing its nature.
+
+No fix is proposed here for any of the three. No threshold, window, weight or gate
+is revised by recording them.
 
 ### Correction to `Event_Intelligence.md`
 
@@ -328,10 +458,15 @@ preserves it. Recorded as a known limit of the chosen bound, not a defect.
 
 ---
 
-## 6. Does AC-1 fully satisfy the Engineering Handbook?
+## 6. Does the engine satisfy the Engineering Handbook?
 
-**No. AC-1 fully resolves D-2 and nothing else. That was its stated scope, and it
-achieved it completely.**
+**This section was written against AC-1 alone, when D-1, D-9 and D-10 were all
+open. AC-2, AC-3 and AC-4 have since closed them.** The AC-1 assessment is kept
+below as written, because it is an accurate record of what that one change did and
+did not achieve; the conformance table that follows has been brought up to date.
+
+**AC-1's own verdict, unchanged: it fully resolves D-2 and nothing else. That was
+its stated scope, and it achieved it completely.**
 
 ### What AC-1 settles
 
@@ -346,31 +481,33 @@ is now bounded at 30.
 
 ### What remains unsatisfied
 
-Measured against the handbook's own invariants:
+Measured against the handbook's own invariants, after AC-1 through AC-4:
 
 | Principle | Source | Status |
 |---|---|---|
-| Ambiguity never resolves into a selection | `Event_Intelligence.md` inv. 3 | **Violated at tier 2** (D-1) |
-| Human confirmation outranks inference | `Event.md` inv. 4 | **Violated** (D-9) |
+| Ambiguity never resolves into a selection | `Event_Intelligence.md` inv. 3 | Upheld against contradiction since AC-2. **Qualified** by residual risks 1 and 3, where the round is unstated rather than contradicted |
+| Human confirmation outranks inference | `Event.md` inv. 4 | **Upheld** since AC-3 — the status guard, not the comparator |
 | Every accepted change is recorded | `EventUpdate.md` inv. 1 | **Violated on the human path** (G-4) |
 | Silence is not deletion | `Event.md` inv. 5 | Upheld in updates; **violated in confidence scoring** (D-5) |
-| No decision path degrades an Event | `Event_Intelligence.md` inv. 10 | **Violated** (D-1, D-9, D-10) |
+| No decision path degrades an Event | `Event_Intelligence.md` inv. 10 | Upheld against D-1, D-9 and D-10. Still depends on recognition being right — see the residual risks |
 | Identity is conceptual; the key approximates it | `Event.md` inv. 7 | **Undermined** (D-7) |
 | Refusal is a valid terminal state | `Event_Intelligence.md` inv. 9 | Upheld |
 | Recognition precedes mutation | `Event_Intelligence.md` inv. 1 | Upheld |
-| Higher confidence is never overwritten by lower | `Event_Intelligence.md` inv. 4 | Upheld — but see D-9 for *equal* |
+| Higher confidence is never overwritten by lower | `Event_Intelligence.md` inv. 4 | Upheld. The *equal*-confidence case still passes the comparator, but can no longer reach a `confirmed` Event |
 | One observation revises at most one Event | `Event_Intelligence.md` inv. 2 | Upheld |
 
-**Verdict.** The engine's *architecture* conforms to the handbook. Its
-*thresholds and guards* do not, in three material places. AC-1 closed the one the
-handbook called most dangerous; D-1 is now the highest-severity open defect, and
-D-9 is its equal in severity while being far cheaper to fix — a single comparison
-operator.
+**Verdict.** The engine's *architecture* conformed to the handbook throughout; the
+gap was always in its thresholds and guards. All four conformance issues that gap
+produced are now delivered: AC-1 bounded the weakest tier, AC-2 put identity ahead
+of similarity, AC-3 made human confirmation categorical, and AC-4 stopped the
+placeholder company from becoming an Event.
 
-Two of the three critical defects (D-9, D-10) are boundary conditions on
-comparisons and truthiness rather than design errors. That is the encouraging
-reading of this matrix: **the reasoning model is sound, and its remaining failures
-are arithmetic.**
+The original reading of this matrix — *the reasoning model is sound, and its
+remaining failures are arithmetic* — held up. Three of the four were closed by
+adding a categorical check ahead of a numeric one rather than by retuning any
+number: no weight, band or threshold in §1 or §4 was changed by any of them. What
+remains open is one recognition-adjacent defect (**D-7**) and four elsewhere in the
+decision layer; what remains *unclosed by design* is recorded as residual risks.
 
 ---
 
@@ -390,7 +527,15 @@ derived by reading, since the Jest suite cannot run in the current environment
 (a missing MSVC runtime prevents Jest 30's native resolver from loading — an
 environment gap, unrelated to any code in this repository).
 
-D-9 and D-10 are traced from source and are not empirically reproduced; both
-depend on reaching specific confidence values, and the arithmetic showing those
-values are reachable is given inline. They should be confirmed with a test before
-being treated as incidents.
+D-9 and D-10 were traced from source and never empirically reproduced; both
+depended on reaching specific confidence values, and the arithmetic showing those
+values are reachable is given inline. Both were closed by AC-3 and AC-4
+(`7c006a4`) before that confirmation was attempted, so they are recorded as closed
+by construction — the guard and the gate make the confidence value irrelevant —
+rather than as reproduced and then fixed.
+
+**Currency of this document.** §1, §2.B, §2.E, §2.G, §3, §4, §5 and §6 have been
+reconciled against the post-AC-4 implementation. The closed-defect text is retained
+as history and is labelled as such throughout; where a row's `Current` column
+differs from what this matrix originally recorded, the original finding is shown
+in italics beside it.

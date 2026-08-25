@@ -89,12 +89,30 @@ identifiers (`D-n` for architectural debt, `G-n` for unbuilt intent).
   messages, two-layer de-duplication, and the drop path that remains its sharpest
   edge.
 
-> **Currency.** Both `Event_Intelligence.md` and `Recognition_Decision_Matrix.md`
-> predate AC-2 and have not yet been updated for it. They still record **D-1**
-> (Tier-2 accepting a same-date match with a mismatched round) as open, and the
-> matrix still shows rows B1/B2 as `UPDATE`. That defect is closed — see
-> [ADR-006](06_ADR/ADR-006_Identity_Precedes_Similarity.md). Read those two
-> documents' D-1 material as history until they are revised.
+> **Currency.** Both documents have been reconciled against the implementation
+> after AC-1 through AC-4. Four defects they originally recorded as open are
+> **closed**:
+>
+> | | Defect | Closed by |
+> |---|---|---|
+> | **D-1** | Tier 2 accepting a same-date match with a mismatched round | AC-2 / `54584db` — see [ADR-006](06_ADR/ADR-006_Identity_Precedes_Similarity.md) |
+> | **D-2** | Tier 3 applying no date bound | AC-1 / `8edf87a` |
+> | **D-9** | A confidence-1.0 extraction overwriting a human confirmation | AC-3 / `7c006a4` |
+> | **D-10** | A `"unknown"` placeholder company creating a matchable Event | AC-4 / `7c006a4` |
+>
+> **Both documents deliberately retain the original defect descriptions**, because
+> the reasoning that identified them is what constrains future changes to these
+> paths. Historical material is labelled as such — read a `D-n` heading together
+> with its status before treating it as a description of current behaviour. One
+> nuance worth carrying: **D-9 is closed by a guard, not by a comparator change.**
+> The original observation that the incumbent comparator is a strict `<` remains
+> true of the code; what closed is its consequence.
+>
+> `Event_Intelligence.md` and the matrix both now carry a **Current residual
+> recognition risks** section. Those are not defects and hold no `D-n` numbers:
+> each follows from a decision the architecture states and defends. They are
+> recorded so that four closed defects are not read as "recognition is now safe",
+> and no fix is proposed for them.
 
 ### `03_Development/`
 
@@ -234,10 +252,18 @@ needed.
 - **`D-n`** identifies architectural debt — implementation that contradicts
   stated intent. **`G-n`** identifies a gap — intent not yet built. Both are
   catalogued in `Event_Intelligence.md` and ranked by severity in
-  `Recognition_Decision_Matrix.md`.
+  `Recognition_Decision_Matrix.md`. A closed `D-n` keeps its number and its
+  original description; it is marked closed rather than deleted.
+- **Residual risks carry no number.** A behaviour that follows from a decision the
+  architecture states and defends is not debt, even where it admits on thin
+  evidence. Those are recorded separately, under *Current residual recognition
+  risks*, so the two are never conflated.
 - **`AC-n`** identifies an Architecture Conformance issue: the work that brings
   the implementation back in line with the handbook. AC-1 bounded the weakest
-  recognition tier in time; AC-2 implemented ADR-006.
+  recognition tier in time; AC-2 implemented ADR-006's identity gate; AC-3 made
+  human confirmation authoritative over inference; AC-4 stopped placeholder
+  companies from becoming matchable Events; AC-5 introduced identity and ownership
+  per RFC-001.
 - **Every document ends with a Confidence section** stating what was derived
   directly from source, what is inferred, and what is not covered by tests. Read
   it before relying on a claim.

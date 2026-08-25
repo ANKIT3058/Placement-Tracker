@@ -28,7 +28,7 @@ No observation may modify an Event held with greater confidence, and no observat
 
 **Primary Failure Mode**
 
-Two distinct real-world activities are recognised as one, silently overwriting a correct record with information belonging to a different round — a failure the system currently cannot detect and, as documented below, actively produces under specific and realistic conditions.
+Two distinct real-world activities are recognised as one, silently overwriting a correct record with information belonging to a different round. The two paths that produced this in ordinary operation — **D-1** and **D-2** — are closed. The failure remains the primary one because prevention is still the entire defence: the system has no detection of any kind, and the narrower paths recorded under *Current residual recognition risks* still reach it.
 
 ---
 
@@ -140,10 +140,13 @@ The real pipeline, as implemented:
   │ RECOGNITION  (three tiers, first sufficient answer wins)      │
   │                                                               │
   │   tier 1  exact   identity key: company | stage | date        │
-  │   tier 2  soft    same company, date within ±3 days,          │
-  │                   scored, accept if score ≥ 0.5               │
-  │   tier 3  loose   same company + stage, accept ONLY if        │
-  │                   exactly one candidate exists                │
+  │   tier 2  soft    same company, date within ±3 days;          │
+  │                   identity gate FIRST — a CONTRADICTS round is│
+  │                   vetoed and never scored (AC-2). Survivors   │
+  │                   are then scored, accept if score ≥ 0.5      │
+  │   tier 3  loose   same company + stage, date within ±30 days, │
+  │                   accept ONLY if exactly one candidate exists │
+  │                   (AC-1)                                      │
   │                                                               │
   │   otherwise → no identity claim                               │
   └────────────────────────────┬─────────────────────────────────┘
@@ -233,9 +236,9 @@ Recognition proceeds in tiers of decreasing evidential strength, stopping at the
 
 **Tier 1 — exact description.** The observation's company, round, and date together match an existing Event's. All three identity attributes agree. This is the strongest possible non-human evidence and is accepted unconditionally.
 
-**Tier 2 — near description.** Same company, and a date close enough that a reschedule or a reporting discrepancy is plausible. Candidates within a narrow window are gathered and scored on how well they agree; the best is accepted if it clears a bar. This tier exists because real messages disagree about dates for benign reasons — a message may describe "the 20th" while the system recorded the 21st from an earlier, vaguer message.
+**Tier 2 — near description.** Same company, and a date close enough that a reschedule or a reporting discrepancy is plausible. Candidates within a narrow window are gathered; each is first classified against the observation's round as AGREES, UNKNOWN or CONTRADICTS, and a CONTRADICTS candidate is disqualified outright. Only the survivors are scored on how well they agree, and the best is accepted if it clears a bar. This tier exists because real messages disagree about dates for benign reasons — a message may describe "the 20th" while the system recorded the 21st from an earlier, vaguer message.
 
-**Tier 3 — sole candidate.** Same company and round, with no constraint on date, accepted **only if exactly one such Event exists.** The reasoning is that uniqueness is itself a form of evidence: if a company has run exactly one round of this type, an observation about that round has only one thing it could mean.
+**Tier 3 — sole candidate.** Same company and round, within a generous date window, accepted **only if exactly one such Event exists.** The reasoning is that uniqueness is itself a form of evidence: if a company has run exactly one round of this type in a plausible period, an observation about that round has only one thing it could mean. The window is what makes "exactly one" meaningful — over unbounded time a company's first round of a given type is trivially unique, which is what **D-2** exploited before AC-1 bounded it.
 
 ## How ambiguity is handled
 
@@ -245,17 +248,24 @@ The reasoning is the failure asymmetry. Choosing among plausible candidates conv
 
 ## How uniqueness is determined
 
-Three attributes individuate a placement activity: which company, which round, when. Tier 1 requires all three. Tier 2 relaxes the third within a bound. Tier 3 relaxes it entirely but demands that the first two leave only one possibility.
+Three attributes individuate a placement activity: which company, which round, when. Tier 1 requires all three. Tier 2 relaxes the third within a narrow bound, and refuses any candidate that contradicts the second. Tier 3 relaxes the third within a wider bound but demands that the first two leave only one possibility.
 
 The intended invariant across all three: **an Event is matched only when the evidence permits exactly one reading.**
 
-> ## ⚠ Architectural debt — the strategy is not faithfully implemented
+> ## ✅ Closed architectural debt — the two tiers that violated this principle
 >
-> Two tiers violate the uniqueness principle above. Both are detailed with reproduction conditions in the Design Intent vs. Current Implementation audit; summarised here because they belong to this section's subject matter.
+> Both defects below were real, were reached in ordinary operation, and are now **closed**. They are retained in full because the reasoning that produced them is the reasoning that constrains any future change to these tiers. Their current status is carried in the Design Intent vs. Current Implementation audit; the residual risks that remain after them are recorded in *Current residual recognition risks*.
 >
-> **D-1 · Tier 2 accepts a same-date match regardless of round.** The scoring function weights date proximity at 0.5 and accepts at a threshold of 0.5, so **an exact date match alone reaches the acceptance bar with no contribution from anything else.** A round mismatch contributes zero and does not prevent acceptance. Two genuinely different rounds run by one company on one day — a pre-placement talk in the morning and an online assessment in the afternoon, which is an ordinary occurrence — will be recognised as the same Event. The round, one of the three identity attributes, is effectively optional at this tier.
+> **D-1 · Tier 2 accepted a same-date match regardless of round. — CLOSED by AC-2 (`54584db`).**
+> *The defect.* The scoring function weights date proximity at 0.5 and accepts at a threshold of 0.5, so **an exact date match alone reached the acceptance bar with no contribution from anything else.** A round mismatch contributed zero — "no support", not "evidence against" — and therefore could not prevent acceptance. Two genuinely different rounds run by one company on one day — a pre-placement talk in the morning and an online assessment in the afternoon, which is an ordinary occurrence — were recognised as the same Event. The round, one of the three identity attributes, was effectively optional at this tier.
+> *The fix.* Identity is now classified categorically **before** any scoring (ADR-006). A candidate whose round CONTRADICTS the observation is vetoed by the identity gate and never reaches the scorer, so no score at any date distance or confidence can admit it. The arithmetic above is unchanged; what changed is that contradiction is no longer something a score is permitted to overrule. Regression coverage sweeps every combination of Δ ∈ {0,1,2,3} × confidence ∈ {0, 0.25, 0.5, 0.75, 1.0} and asserts both that no match is returned **and** that scoring was never invoked — the ordering, not merely the outcome, is what is pinned.
 >
-> **D-2 · Tier 3 applies no date bound whatsoever.** "Exactly one candidate" is evaluated across all time. An observation about a round in September will match a same-named round from the previous March if it is the only one on record — and because the dates differ, the revision is then classified as a **reschedule**, rewriting the old Event's date, marking it relocated, and regenerating its identity key. A year-old round is silently rebranded as the new one. This is the single most dangerous path in the subsystem, and it is reached precisely when the safer tiers found nothing.
+> **BEFORE:** a contradicting round reached scoring, and the date term alone cleared the bar.
+> **CURRENT:** a contradicting round is rejected before scoring, so admission cannot be reached at all.
+>
+> **D-2 · Tier 3 applied no date bound whatsoever. — CLOSED by AC-1 (`8edf87a`).**
+> *The defect.* "Exactly one candidate" was evaluated across all time. An observation about a round in September matched a same-named round from the previous March if it was the only one on record — and because the dates differed, the revision was then classified as a **reschedule**, rewriting the old Event's date, marking it relocated, and regenerating its identity key. A year-old round was silently rebranded as the new one. This was the single most dangerous path in the subsystem, and it was reached precisely when the safer tiers found nothing.
+> *The fix.* The weakest tier's candidate query now **requires** a date and a window as part of its signature — a caller cannot reintroduce the unbounded query by omission — and recognition passes `LOOSE_MATCH_WINDOW_DAYS` (30). Uniqueness is evidence only inside a plausible range; outside it the tier yields no match, which creates a duplicate rather than corrupting an existing Event. Regression coverage includes the original March-vs-September case and both inclusive window boundaries at exactly ±30 days.
 
 ---
 
@@ -390,13 +400,15 @@ Where it is honoured, it appears as:
 - **The confidence comparator** — weak inferences cannot overwrite strong belief.
 - **Field-level updates** — an observation revises only what it spoke about, so a partial match cannot blank unrelated fields.
 
-## Where it is violated
+## Where it was violated, and what remains
 
-Honestly: in the two places most likely to matter.
+Historically: in the two places most likely to matter.
 
-**D-1** makes the middle tier accept a same-date match with a mismatched round, merging two distinct rounds run on one day. **D-2** makes the weakest tier accept a sole candidate at unbounded temporal distance, merging rounds separated by months and then misclassifying the merge as a reschedule.
+**D-1** made the middle tier accept a same-date match with a mismatched round, merging two distinct rounds run on one day. **D-2** made the weakest tier accept a sole candidate at unbounded temporal distance, merging rounds separated by months and then misclassifying the merge as a reschedule. Both converted the preferred failure (duplicate) into the catastrophic one (merge), and both were reached in ordinary operation rather than in edge conditions.
 
-Both convert the preferred failure (duplicate) into the catastrophic one (merge). Both are reached in ordinary operation rather than in edge conditions. **The architecture's stated preference is not currently expressed by its recognition thresholds**, and closing that gap is the highest-value correctness work in the system.
+Both are closed — D-1 by AC-2 (`54584db`), D-2 by AC-1 (`8edf87a`). **The architecture's stated preference is now expressed by the recognition path itself**: contradiction disqualifies before similarity is consulted, and uniqueness is only evidence inside a bounded range. What each fix does when it declines is create a duplicate, which is the recoverable direction.
+
+That is not the same as saying the preference is fully enforced. Three narrower paths still admit on thinner evidence than the principle implies, and they are recorded in *Current residual recognition risks*. The difference is one of kind: those are cases where an identity attribute was **unstated**, not cases where it was **contradicted**.
 
 ## Trade-offs of the preference itself
 
@@ -416,7 +428,7 @@ The reason the preference still holds is **recoverability**: a duplicate can be 
 
 **Rejected alternatives** — A single scoring function over all candidates was rejected because it flattens evidence quality into one number, making "all three attributes agreed" indistinguishable from "the date was close and the score happened to clear the bar." Exact-match-only was rejected because human-written text rarely agrees exactly and the system would create a duplicate on every minor discrepancy.
 
-**Trade-offs** — Three tiers mean three sets of thresholds to reason about and three distinct failure modes. Tier boundaries create discontinuities: an observation just outside the middle tier's window falls through to a much weaker tier rather than being scored on a continuum. **D-2 is a direct consequence of this shape** — falling through to the weakest tier is the dangerous path, and it is entered precisely when the safer tiers declined.
+**Trade-offs** — Three tiers mean three sets of thresholds to reason about and three distinct failure modes. Tier boundaries create discontinuities: an observation just outside the middle tier's window falls through to a much weaker tier rather than being scored on a continuum. **D-2 was a direct consequence of this shape** — falling through to the weakest tier is the dangerous path, and it is entered precisely when the safer tiers declined. AC-1 bounded that tier in time rather than removing the discontinuity, so the shape and its cost remain: the weakest tier is still the one entered when evidence is thinnest, and it is still the tier with the least identity protection (see *Current residual recognition risks*).
 
 ### Candidate narrowing
 
@@ -446,7 +458,7 @@ The reason the preference still holds is **recoverability**: a duplicate can be 
 
 **Rejected alternatives** — Uniform weighting was rejected as treating a wrong venue as equivalent to a wrong date. Learned weights were rejected for want of labelled outcome data — there is no ground truth to learn from.
 
-**Trade-offs** — Weights are hand-tuned intuitions never validated against outcomes. Round is weighted at 0.10 despite being an *identity* attribute, which understates its importance to recognition — a related judgement to the one that produces **D-1**.
+**Trade-offs** — Weights are hand-tuned intuitions never validated against outcomes. Round is weighted at 0.10 despite being an *identity* attribute, which understates its importance to recognition — the same judgement that produced **D-1**. AC-2 removed round from the scorer's authority rather than reweighting it: the round now decides eligibility categorically before scoring, and its 0.10 weight ranks eligible candidates only. The weight is therefore no longer load-bearing for identity, and the confidence model still carries it unchanged (**D-6**).
 
 ### Date handling
 
@@ -456,7 +468,7 @@ The reason the preference still holds is **recoverability**: a duplicate can be 
 
 **Rejected alternatives** — Treating date as an ordinary field was rejected because later observations would then fail exact recognition and create duplicates — a reschedule would manufacture the exact problem the model prevents. A stable synthetic identifier independent of attributes was rejected as unavailable: nothing in a message carries one.
 
-**Trade-offs** — Identity keyed on a mutable attribute invites the misreading that identity itself is mutable, which `Event.md` exists partly to prevent. It also means **any wrong date creates a wrong identity**, so an extraction error propagates from description into recognition. And because reschedule is *inferred from* a date difference rather than stated by the message, **D-2** allows a false merge to be reported to the user as a legitimate reschedule — the most misleading possible presentation of that failure.
+**Trade-offs** — Identity keyed on a mutable attribute invites the misreading that identity itself is mutable, which `Event.md` exists partly to prevent. It also means **any wrong date creates a wrong identity**, so an extraction error propagates from description into recognition. And because reschedule is *inferred from* a date difference rather than stated by the message, a false merge is reported to the user as a legitimate reschedule — the most misleading possible presentation of that failure. **D-2** was the widest route to it; AC-1's 30-day bound narrows how far such a merge can reach, but the presentation problem is a property of inferring reschedule from a date difference and is untouched by that bound.
 
 ### Venue handling
 
@@ -488,7 +500,7 @@ The reason the preference still holds is **recoverability**: a duplicate can be 
 
 **Trade-offs** — Inference can be wrong in both directions, and the design accepts that while biasing toward the recoverable failure.
 
-> **D-7 · The identity key is not normalised, and extraction path affects it.** The key is assembled from raw extracted values with no case or whitespace normalisation. Because the message body is lowercased before extraction, pattern-derived values arrive lowercase, while the model-based extractor is instructed to return a capitalised vocabulary for the round. The two extraction strategies therefore produce **different identity keys for the same real activity**, and which one is used depends on whether the model was enabled and whether the call succeeded — a silent per-message fallback. The consequence is that exact recognition fails across that boundary and the observation drops to weaker tiers, where **D-1** and **D-2** live. An identity key that varies with infrastructure state is not an identity key; normalising it is cheap and should precede any threshold tuning.
+> **D-7 · The identity key is not normalised, and extraction path affects it.** The key is assembled from raw extracted values with no case or whitespace normalisation. Because the message body is lowercased before extraction, pattern-derived values arrive lowercase, while the model-based extractor is instructed to return a capitalised vocabulary for the round. The two extraction strategies therefore produce **different identity keys for the same real activity**, and which one is used depends on whether the model was enabled and whether the call succeeded — a silent per-message fallback. The consequence is that exact recognition fails across that boundary and the observation drops to the weaker tiers — historically where **D-1** and **D-2** lived, and still where the residual risks below are concentrated. An identity key that varies with infrastructure state is not an identity key; normalising it is cheap and should precede any threshold tuning. **D-7 remains open.**
 
 ---
 
@@ -500,7 +512,7 @@ The architectural laws of reasoning. Marked where the implementation does not cu
 
 **2. One observation never revises more than one Event.** A single observation resolves to at most one identity. Revising several would mean the system was unsure which one it meant and wrote to all of them. *Upheld.*
 
-**3. Ambiguity never resolves into a selection.** When evidence permits more than one reading, the system makes no identity claim. *Upheld in the weakest tier's uniqueness rule; violated in spirit by **D-1**, where a same-date match is accepted despite a contradicting identity attribute.*
+**3. Ambiguity never resolves into a selection.** When evidence permits more than one reading, the system makes no identity claim. *Upheld in the weakest tier's uniqueness rule, and — since AC-2 closed **D-1** — in the middle tier, where a contradicting identity attribute now disqualifies a candidate before it can be scored. Qualified: an **unstated** round is deliberately treated as no claim rather than as ambiguity, which is what residual risks 1 and 3 rest on.*
 
 **4. Higher confidence is never overwritten by lower.** The comparator that makes belief defensible. *Upheld.*
 
@@ -514,7 +526,7 @@ The architectural laws of reasoning. Marked where the implementation does not cu
 
 **9. Refusal is a valid terminal state.** Declining to act is a decision, not a failure, and requires no compensating action. *Upheld.*
 
-**10. No decision path degrades an Event.** Every outcome either improves belief or leaves it untouched. *Upheld under correct recognition; **D-1** and **D-2** violate it by writing correct data into the wrong Event — the degradation is of a different Event than the one being reasoned about.*
+**10. No decision path degrades an Event.** Every outcome either improves belief or leaves it untouched. *Upheld under correct recognition. **D-1** and **D-2** violated it by writing correct data into the wrong Event — the degradation being of a different Event than the one being reasoned about — and both are now closed. The invariant still depends on recognition being right: any residual risk below is a route to the same class of degradation, on thinner evidence.*
 
 **11. Every accepted revision is recorded.** *Violated on the human path — manual confirmation writes no history (see `EventUpdate.md`).*
 
@@ -522,11 +534,11 @@ The architectural laws of reasoning. Marked where the implementation does not cu
 
 # Failure Handling
 
-**Ambiguous recognition.** Handled by refusal at the weakest tier, which produces a duplicate rather than a guess — the intended direction. Not handled at the middle tier, where **D-1** accepts a same-date candidate whose round contradicts the observation.
+**Ambiguous recognition.** Handled by refusal at the weakest tier, which produces a duplicate rather than a guess — the intended direction. Handled at the middle tier since AC-2 closed **D-1**: a candidate whose round contradicts the observation is vetoed before it can be scored, and the veto is logged with its reason, so a refusal is observable rather than silent.
 
 **Duplicate Events.** Accepted as the tolerable failure. There is no deduplication pass, no merge tooling, and no detection: duplicates are found by users looking at their timeline. Tolerable while volume is low; it means the preferred failure mode is also unmanaged.
 
-**False merge prevention.** The tiering, the window, and the uniqueness rule are the preventive mechanisms. They are partially effective, and **D-1** and **D-2** are the holes. There is **no detection whatsoever** — a false merge produces no error, no anomaly, and no flag. The only signal is a user noticing that a round's details are wrong, which requires them to already doubt the system.
+**False merge prevention.** The tiering, the identity gate, the ±3-day and ±30-day windows, and the uniqueness rule are the preventive mechanisms. **D-1** and **D-2** were the two widest holes and are closed; the residual risks below are what remains, and they are narrower but not nil. Prevention is still the entire defence, because there is **no detection whatsoever** — a false merge produces no error, no anomaly, and no flag. The only signal is a user noticing that a round's details are wrong, which requires them to already doubt the system (**G-2**).
 
 **Human correction.** The one reliable repair path. A human sets values, raises confidence to certainty, and clears the doubt marker, after which inference does not silently override. It does not currently repair a false merge, because the merged-away round's data is gone and nothing indicates a merge occurred.
 
@@ -554,7 +566,7 @@ Note where "routed to human" sits: below a duplicate, because it costs user atte
 
 **Atomic revision.** An accepted change and its history entries commit together or not at all.
 
-**Order independence, qualified.** Correctness does not depend on processing order, because adjudication is trust-based rather than recency-based: a weaker late arrival is rejected on its merits. *Qualification:* order still affects outcomes through recognition. Which Event exists first determines what a later observation can match, so processing order influences which Events are created and — under **D-2** — which are merged.
+**Order independence, qualified.** Correctness does not depend on processing order, because adjudication is trust-based rather than recency-based: a weaker late arrival is rejected on its merits. *Qualification:* order still affects outcomes through recognition. Which Event exists first determines what a later observation can match, so processing order influences which Events are created and which are merged. AC-1 bounded how far that reach extends in time; it did not make recognition order-independent.
 
 **No cross-Event consistency.** Reasoning is per-Event. No transaction spans several, and a single observation affects at most one.
 
@@ -641,19 +653,19 @@ What remains of **G-6** is therefore exactly one step: routing a document's `eve
 
 # Future Evolution
 
-**Correctness** — in priority order, and the first two are the system's most valuable outstanding work.
+**Correctness** — in priority order.
 
-1. **Require identity-attribute agreement in middle-tier recognition (D-1).** The date term alone must not reach the acceptance bar. Either lower the date weight below the threshold, raise the threshold above it, or make a round mismatch disqualifying. Any of the three closes an active false-merge path.
-2. **Bound the weakest tier by date (D-2).** Sole candidacy should not imply identity across arbitrary time. A generous window still eliminates the worst case.
-3. **Normalise the identity key (D-7)** so recognition stops depending on which extraction strategy ran.
-4. **Reconcile the confidence model (D-5)** — remove double-counting and stop penalising the silence the scorer deliberately neutralised.
-5. **Attach review to recognised Events (D-3)** rather than creating parallel ones, and never silently drop an observation on key collision.
-6. **Preserve the abandoned outcome (D-4).**
-7. **Route human confirmation through the recording path (G-4).**
+> The two items that previously headed this list — requiring identity-attribute agreement in the middle tier (**D-1**) and bounding the weakest tier by date (**D-2**) — are **done**, delivered as AC-2 (`54584db`) and AC-1 (`8edf87a`). They are retained in the audit table above as closed rather than deleted, because the reasoning that motivated them still constrains changes to these tiers. The list below is what remains.
+
+1. **Normalise the identity key (D-7)** so recognition stops depending on which extraction strategy ran. Unchanged in priority: it is the cheapest correctness work left, and it feeds the weaker tiers where the residual risks sit.
+2. **Reconcile the confidence model (D-5)** — remove double-counting and stop penalising the silence the scorer deliberately neutralised.
+3. **Attach review to recognised Events (D-3)** rather than creating parallel ones, and never silently drop an observation on key collision.
+4. **Preserve the abandoned outcome (D-4).**
+5. **Route human confirmation through the recording path (G-4).**
 
 **Scalability**
 - Candidate discovery is per-observation and narrow; volume is not the pressure. The pressure is **per-message model cost**, addressable by filtering non-placement mail before extraction.
-- Recognition is exact-equality on company. Semantic comparison would raise recall — and must not be adopted before the thresholds above are fixed, since it widens the candidate set and therefore the merge surface.
+- Recognition is exact-equality on company. Semantic comparison would raise recall — and must not be adopted before **D-7** is closed and the residual risks above are understood, since it widens the candidate set and therefore the merge surface.
 
 **Product**
 - **Wire document intelligence into adjudication (G-6)** — the largest built-but-unused capability in the system.
