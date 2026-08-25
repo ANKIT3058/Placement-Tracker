@@ -23,6 +23,16 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import Dashboard from "../Dashboard";
 import { getEvents } from "../../api/eventApi";
 
+/* The Dashboard renders StudentProfileSection, which fetches the caller's
+   profile on mount (G-8.3). Mocked at the module boundary for the same reason
+   `eventApi` is: this file asserts the LOGOUT request at the fetch boundary and
+   queues responses in order, so an unrelated call landing first would silently
+   consume the one queued for the POST. Nothing here is about the profile. */
+vi.mock("../../api/userApi", () => ({
+  getStudentProfile: vi.fn().mockRejectedValue(new Error("not under test")),
+  updateStudentProfile: vi.fn(),
+}));
+
 vi.mock("../../api/eventApi", () => ({
   getEvents: vi.fn(),
   updateEvent: vi.fn(),

@@ -7,6 +7,7 @@ import EmptyState from "../components/EmptyState";
 import EventDetailsDrawer from "../components/EventDetailsDrawer";
 import ReviewCard from "../components/ReviewCard";
 import EmailInput from "../components/EmailInput";
+import StudentProfileSection from "../components/StudentProfileSection";
 import type { Event } from "../types/event";
 
 /* Stable keys for the placeholder cards. Three fills a desktop row
@@ -247,6 +248,18 @@ export default function Dashboard() {
           {!isAuthenticationRequired(error) && (
             <EmailInput refresh={fetchData} />
           )}
+
+          {/* Optional campus information, and deliberately just another
+              section: it gates nothing, and a student who never sets a
+              registration number sees an application that behaves identically.
+
+              Hidden in the authentication-required state for the same reason
+              the form above is — the endpoints behind it are authenticated, so
+              offering the control advertises an action that cannot succeed.
+              The section also hides itself when its own load fails, so a 500
+              here adds no second error banner to a page that already reports
+              what went wrong. */}
+          {!isAuthenticationRequired(error) && <StudentProfileSection />}
 
           {loading ? (
             <section className="section" aria-busy="true">
