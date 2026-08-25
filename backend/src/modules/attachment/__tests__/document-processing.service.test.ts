@@ -360,9 +360,19 @@ describe("existing processing behaviour is unchanged", () => {
     expect(mocked.markParsingFailed).not.toHaveBeenCalled();
   });
 
-  test("is idempotent for an already-completed attachment", async () => {
+  // A GENUINELY settled attachment: downloaded AND parsed. This test used to
+  // seed `{ processingStatus: "completed" }` alone — which, with no `parsedAt`,
+  // is the crash state G-7.1 exists to fix, not a finished one. Seeding a
+  // finished row is what makes this an idempotency assertion again rather than
+  // an assertion that the replay hole stays open.
+  test("is idempotent for an already-completed, already-parsed attachment", async () => {
     mocked.getAttachmentById.mockResolvedValue(
-      attachmentRow({ processingStatus: "completed" }),
+      attachmentRow({
+        processingStatus: "completed",
+        storagePath: STORAGE_PATH,
+        parsedAt: new Date("2026-08-20T10:05:00.000Z"),
+        parsingError: null,
+      }),
     );
 
     await service.process(ATTACHMENT_ID);
@@ -389,6 +399,265 @@ describe("existing processing behaviour is unchanged", () => {
 
     expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
     expect(mocked.markAttachmentFailed).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G-7.1 — replay safety.
+//
+// `markAttachmentCompleted` is written the moment the DOWNLOAD succeeds, before
+// a parser is even selected. The idempotency guard used to read that status as
+// "the job is done", so a worker killed between the two — a deploy, a restart, a
+// host recycling its container — left a row saying `completed` with nothing
+// parsed, and the replay BullMQ's stalled checker schedules returned at the
+// guard and reported success. Parsing and Document Intelligence were skipped
+// PERMANENTLY: the enqueue filter excludes `completed` too, so nothing would
+// ever queue that attachment again.
+//
+// These tests pin the replacement: the guard asks whether the PIPELINE is
+// finished, using durable state that already exists — no new column, no
+// migration. `markAttachmentCompleted` deliberately stays exactly where it was,
+// so a parse failure still cannot flip a successful download back to failed.
+// ---------------------------------------------------------------------------
+
+// A row in the crash window: downloaded and stored, never parsed.
+const crashedAfterDownload = (overrides: Record<string, unknown> = {}) =>
+  attachmentRow({
+    processingStatus: "completed",
+    storagePath: STORAGE_PATH,
+    parsedAt: null,
+    parsingError: null,
+    ...overrides,
+  });
+
+describe("a replay after a crash between download and parse", () => {
+  // THE REGRESSION TEST. Against the old guard this returns immediately and
+  // every assertion below fails.
+  test("re-runs the pipeline and persists the parsed result", async () => {
+    mocked.getAttachmentById.mockResolvedValue(crashedAfterDownload());
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(getAttachmentData).toHaveBeenCalledTimes(1);
+    expect(parser.parse).toHaveBeenCalledWith(STORAGE_PATH);
+    expect(mocked.updateParsedResult).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+      PARSED,
+      expect.any(Date),
+    );
+  });
+
+  test("re-marks the attachment processing and completed", async () => {
+    mocked.getAttachmentById.mockResolvedValue(crashedAfterDownload());
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(mocked.markAttachmentProcessing).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+    );
+    expect(mocked.markAttachmentCompleted).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+      STORAGE_PATH,
+      expect.any(Date),
+    );
+  });
+
+  // The replay reaches Document Intelligence under the EXISTING gate — the
+  // recovered work is worth exactly as much as first-run work, and no more. The
+  // gate itself is unchanged and pinned by its own suite below.
+  test("reaches document intelligence when USE_AI is enabled", async () => {
+    enableAI();
+    mocked.getAttachmentById.mockResolvedValue(crashedAfterDownload());
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(analyze).toHaveBeenCalledWith(PARSED);
+    expect(savedIntelligence).toHaveBeenCalledWith(
+      OWNER,
+      ATTACHMENT_ID,
+      INSIGHTS,
+      expect.any(Date),
+    );
+  });
+
+  test("does not reach document intelligence when USE_AI is disabled", async () => {
+    delete process.env.USE_AI;
+    mocked.getAttachmentById.mockResolvedValue(crashedAfterDownload());
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(mocked.updateParsedResult).toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    expect(savedIntelligence).not.toHaveBeenCalled();
+  });
+
+  // Ownership is still DERIVED, on the recovery path as much as the first-run
+  // path. A replay is the case most likely to acquire an owner from somewhere
+  // convenient — the payload, a cached value — and it must not.
+  test.each([7, 42, 1234])(
+    "threads the persisted userId (%i) into every write of the replay",
+    async (persistedUserId) => {
+      enableAI();
+
+      mocked.getAttachmentById.mockResolvedValue(
+        crashedAfterDownload({
+          userId: persistedUserId,
+          email: {
+            id: 10,
+            userId: persistedUserId,
+            gmailMessageId: "gmail-msg-1",
+            gmailAccount: {
+              id: 3,
+              userId: persistedUserId,
+              refreshToken: "refresh-token",
+            },
+          },
+        }),
+      );
+
+      await service.process(ATTACHMENT_ID);
+
+      expect(mocked.markAttachmentProcessing).toHaveBeenCalledWith(
+        { userId: persistedUserId },
+        ATTACHMENT_ID,
+      );
+      expect(mocked.markAttachmentCompleted).toHaveBeenCalledWith(
+        { userId: persistedUserId },
+        ATTACHMENT_ID,
+        STORAGE_PATH,
+        expect.any(Date),
+      );
+      expect(mocked.updateParsedResult).toHaveBeenCalledWith(
+        { userId: persistedUserId },
+        ATTACHMENT_ID,
+        PARSED,
+        expect.any(Date),
+      );
+      expect(savedIntelligence).toHaveBeenCalledWith(
+        { userId: persistedUserId },
+        ATTACHMENT_ID,
+        INSIGHTS,
+        expect.any(Date),
+      );
+    },
+  );
+
+  // An absent column may arrive as `undefined` rather than `null` depending on
+  // how the row was selected. Both mean "never parsed", and the predicate must
+  // not depend on which one it is handed.
+  test.each([
+    ["null", null],
+    ["undefined", undefined],
+  ])("treats parsedAt/parsingError of %s as never parsed", async (_label, empty) => {
+    mocked.getAttachmentById.mockResolvedValue(
+      crashedAfterDownload({ parsedAt: empty, parsingError: empty }),
+    );
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(getAttachmentData).toHaveBeenCalledTimes(1);
+    expect(mocked.updateParsedResult).toHaveBeenCalled();
+  });
+});
+
+describe("a replay with nothing left to do is a no-op", () => {
+  // The assertion shared by every settled case: no Gmail call, no storage
+  // write, no parse, no mutation, no provider call. AI is armed throughout so
+  // that a leak would be visible rather than masked by the gate.
+  const expectNoWorkPerformed = () => {
+    expect(getAttachmentData).not.toHaveBeenCalled();
+    expect(storage.store).not.toHaveBeenCalled();
+    expect(parser.parse).not.toHaveBeenCalled();
+    expect(mocked.markAttachmentProcessing).not.toHaveBeenCalled();
+    expect(mocked.markAttachmentCompleted).not.toHaveBeenCalled();
+    expect(mocked.markAttachmentFailed).not.toHaveBeenCalled();
+    expect(mocked.updateParsedResult).not.toHaveBeenCalled();
+    expect(mocked.markParsingFailed).not.toHaveBeenCalled();
+    expect(analyze).not.toHaveBeenCalled();
+    expect(savedIntelligence).not.toHaveBeenCalled();
+  };
+
+  test("fully parsed — the pipeline ran to the end", async () => {
+    enableAI();
+    mocked.getAttachmentById.mockResolvedValue(
+      crashedAfterDownload({ parsedAt: new Date("2026-08-20T10:05:00.000Z") }),
+    );
+
+    await service.process(ATTACHMENT_ID);
+
+    expectNoWorkPerformed();
+  });
+
+  // A recorded parse failure is TERMINAL, not unfinished. Parse errors are
+  // deterministic, which is why parseAndPersist never rethrows them; treating
+  // one as unsettled would re-download the file on every replay to fail in
+  // exactly the same way — silently making parse failures retryable, which is
+  // the distinction between the two failure domains this pipeline is built on.
+  test.each([
+    ["parsedAt null", null],
+    ["parsedAt undefined", undefined],
+  ])("parse failed (%s) — no re-download, no re-parse", async (_label, parsedAt) => {
+    enableAI();
+    mocked.getAttachmentById.mockResolvedValue(
+      crashedAfterDownload({ parsedAt, parsingError: "corrupt pdf" }),
+    );
+
+    await service.process(ATTACHMENT_ID);
+
+    expectNoWorkPerformed();
+  });
+
+  // Nothing to parse in the first place, so "never parsed" is not unfinished
+  // work. The registry is the authority — the same call the pipeline makes to
+  // decide whether to parse at all.
+  test("unsupported MIME type — never parsed, but nothing is outstanding", async () => {
+    enableAI();
+    (registry.findParser as jest.Mock).mockReturnValue(undefined);
+    mocked.getAttachmentById.mockResolvedValue(
+      crashedAfterDownload({ mimeType: "image/png" }),
+    );
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(registry.findParser).toHaveBeenCalledWith("image/png");
+    expectNoWorkPerformed();
+  });
+});
+
+// The first branch of the predicate: anything short of a finished download is
+// unfinished, whatever the parse columns say. This is the behaviour that was
+// already correct, kept correct.
+describe("an unfinished download always re-runs", () => {
+  test.each(["pending", "processing", "failed"])(
+    "processingStatus %s re-runs the pipeline",
+    async (processingStatus) => {
+      mocked.getAttachmentById.mockResolvedValue(
+        attachmentRow({ processingStatus }),
+      );
+
+      await service.process(ATTACHMENT_ID);
+
+      expect(getAttachmentData).toHaveBeenCalledTimes(1);
+      expect(mocked.markAttachmentCompleted).toHaveBeenCalled();
+    },
+  );
+
+  // Even a stale parse result cannot excuse an unfinished download: the bytes
+  // are what is missing, and `parsedAt` says nothing about them.
+  test("a set parsedAt does not settle a failed download", async () => {
+    mocked.getAttachmentById.mockResolvedValue(
+      attachmentRow({
+        processingStatus: "failed",
+        parsedAt: new Date("2026-08-20T10:05:00.000Z"),
+      }),
+    );
+
+    await service.process(ATTACHMENT_ID);
+
+    expect(getAttachmentData).toHaveBeenCalledTimes(1);
   });
 });
 

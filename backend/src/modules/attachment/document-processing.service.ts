@@ -80,9 +80,18 @@ export class DocumentProcessingService {
       throw new Error(`Attachment ${attachmentId} not found`);
     }
 
-    // Idempotent: a retried/duplicated job for an already-completed file is a
-    // no-op.
-    if (attachment.processingStatus === ATTACHMENT_STATUS.COMPLETED) {
+    // Idempotent: a replayed/duplicated job with nothing left to do is a no-op.
+    //
+    // The test is "is this pipeline finished", NOT "is the download finished"
+    // (G-7.1). Those were the same question when this service ended at the
+    // download; they have not been since parsing was added, and `completed`
+    // records only the download (attachment.repository markAttachmentCompleted).
+    // Reading it as a whole-pipeline fact left a window — from the moment
+    // completion commits below until parsing finishes — in which a crash and
+    // replay would hit the guard and skip parsing and Document Intelligence
+    // PERMANENTLY: nothing re-enqueues such a row either, because the enqueue
+    // filter excludes `completed` too.
+    if (this.isSettled(attachment)) {
       return;
     }
 
@@ -151,6 +160,48 @@ export class DocumentProcessingService {
     if (parser) {
       await this.parseAndPersist(owner, attachmentId, storagePath, parser);
     }
+  }
+
+  // Whether this attachment's pipeline has nothing left to do, decided from the
+  // row already loaded above — no extra query, and no new column: every fact
+  // this needs is already durable (G-7.1).
+  //
+  // DOWNLOAD, then PARSE. Anything short of `completed` re-runs from the top,
+  // exactly as before. Past that, the parse columns are the discriminator the
+  // status cannot be: `parsedAt` records a successful parse and `parsingError` a
+  // failed one, and a row carrying neither, for a MIME type the registry
+  // handles, is precisely the crash window described in `process`.
+  //
+  // `parsingError` counts as SETTLED, deliberately. A recorded parse failure is
+  // a terminal state, not an unfinished one: parse errors are deterministic, so
+  // they are never rethrown and never retried (see parseAndPersist). Treating
+  // one as unfinished would quietly turn it into a retryable failure and
+  // re-download the file on every replay to fail identically.
+  //
+  // Document Intelligence is deliberately ABSENT from this test. It is
+  // fail-soft and gated on `USE_AI`, so a missing understanding is a normal,
+  // expected outcome — with the gate off no row is ever written, and including
+  // it would leave every attachment permanently unsettled and re-download it on
+  // every replay. A crash inside that step is indistinguishable in durable state
+  // from the provider failure this pipeline already tolerates, and is handled
+  // the same way: it is skipped, not retried.
+  //
+  // `!= null` rather than truthiness, for both columns: an absent field may
+  // arrive as `undefined` rather than `null`, and an empty-string
+  // `parsingError` must not read as "never attempted".
+  private isSettled(attachment: LoadedAttachment): boolean {
+    if (attachment.processingStatus !== ATTACHMENT_STATUS.COMPLETED) {
+      return false;
+    }
+
+    if (attachment.parsedAt != null || attachment.parsingError != null) {
+      return true;
+    }
+
+    // No parse work exists for this format. The registry stays the single
+    // authority on that question — the same call `process` makes to decide
+    // whether to parse at all, so the two can never disagree.
+    return this.selectParser(attachment.mimeType) === undefined;
   }
 
   // Download bytes from Gmail and persist them via the storage abstraction,
