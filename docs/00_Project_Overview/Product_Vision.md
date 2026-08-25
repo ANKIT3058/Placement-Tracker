@@ -57,6 +57,18 @@ Architecture philosophy: **acquisition, interpretation, and belief are separate 
 
 ---
 
+# One product, many independent students
+
+Placement Tracker is account-based. A student signs in with Google, connects their own mailbox, and gets **their own event universe** — their Events, their review queue, their history. Nothing they hold is shared with, visible to, or revisable by another user.
+
+The consequence worth stating at product level, because it looks like a bug and is not:
+
+**The same real-world placement opportunity appears independently for every student who hears about it.** A placement cell announces one round to three hundred students; each of those students who uses the product forms their own belief about it, from their own inbox, at their own confidence. Three hundred Event records describing one round is the correct outcome, not duplication — the product's unit is *one student's* answer to "what is happening, and when", and two students' answers must be able to differ. One may confirm a venue by hand that the other never received.
+
+This also sets a boundary the product will not cross without a separate decision: there is no cross-student view, no shared canonical event, and no aggregation across users. Each student's timeline is derived from what *they* were told, which is the only thing the product can honestly claim to know.
+
+---
+
 # Responsibilities
 
 ## What the product owns
@@ -72,7 +84,7 @@ Architecture philosophy: **acquisition, interpretation, and belief are separate 
 - **The placement process itself.** Applications, eligibility, offers, and institutional records live in the placement portal. This system reads what that process broadcasts; it does not administer it.
 - **The announcement channel.** We do not control message format, cadence, or content, and we never ask the sender to change. This constraint is deliberate and defines the product's shape.
 - **Ground truth.** The mailbox is authoritative, not us. When we disagree with the mailbox, we are wrong.
-- **Institutional adoption.** The product delivers value to one student with one mailbox and no cooperation from anyone else.
+- **Institutional adoption.** The product delivers value to a single student with a single mailbox and no cooperation from anyone else. That is a statement about the *unit of value*, not about capacity: the product serves many students, each independently, and no student's use depends on any other's.
 
 ---
 
@@ -142,7 +154,9 @@ The product's durable state is **belief about the world**, held in three parts:
 
 **Change history** — what changed on an event, from what, to what, and when. This exists so the question "why does it say this?" always has an answer. It is recorded faithfully today and not yet shown to users.
 
-Two supporting pieces of state matter architecturally: the **mailbox connection**, which is what makes unattended operation possible, and the **ingested message record**, which is what makes ingestion idempotent.
+All three are held **per user**. Every piece of durable state above belongs to exactly one account and is read, written and reasoned about within that account's boundary.
+
+Two supporting pieces of state matter architecturally: the **mailbox connection**, which is what makes unattended operation possible, and the **ingested message record**, which is what makes ingestion idempotent. Both are likewise per user.
 
 ---
 
@@ -239,11 +253,17 @@ One further distinction runs through the whole algorithm: **silence and denial a
 **Reason** — Placement information is a claim revised over time. A system that stores only current values cannot explain itself when it is wrong, and an unexplainable system is one users stop trusting after the first error.
 **Trade-offs** — Storage and write cost on every update, for data that currently has no user-facing surface. Deliberate: the record must exist before the feature that reads it, since history cannot be reconstructed retroactively.
 
-### Defer multi-user support
+### ~~Defer multi-user support~~ — **superseded; multi-user is implemented**
 
-**Decision** — One student, one mailbox, no accounts or identity model.
-**Reason** — The full product thesis is testable with a single user. Introducing identity and ownership before the reconciliation problem is solved would spend the project's hardest effort on the least uncertain part.
-**Trade-offs** — Multi-tenancy is not retrofittable cheaply — it touches ownership, authorization, and isolation everywhere. This is real, accepted debt, not an oversight. Any work assuming multiple users needs a product decision first.
+*Kept as a record of a decision that was made, honoured, and then discharged. The sequencing it argues for is the reason the product has the shape it does.*
+
+**Decision** *(then)* — One student, one mailbox, no accounts or identity model.
+**Reason** *(then)* — The full product thesis is testable with a single user. Introducing identity and ownership before the reconciliation problem is solved would spend the project's hardest effort on the least uncertain part.
+**Trade-offs** *(then)* — Multi-tenancy is not retrofittable cheaply — it touches ownership, authorization, and isolation everywhere. This is real, accepted debt, not an oversight. Any work assuming multiple users needs a product decision first.
+
+**Superseded by** — user accounts, ownership on every record, and tenant isolation, specified in RFC-001 and delivered as AC-5. The trade-off above was accurate: the retrofit did touch ownership, authorization and isolation everywhere, and it was paid deliberately once the reconciliation problem it was deferred behind had been solved.
+
+**Current model** — the product is account-based. A user signs in with Google, and every record they produce carries their identity. See *One product, many independent students* above.
 
 ---
 
@@ -329,7 +349,8 @@ Dependency direction is one-way, and preserving it is what keeps the boundaries 
 - **It does not ask the sender to change.** No format, no template, no admin panel, no cooperation.
 - **It does not decide what a message means at the boundary.** Ingestion captures; interpretation decides. Collapsing these would couple mailbox availability to AI availability.
 - **It does not resolve ambiguity without a human.** When trust is insufficient, it escalates rather than guessing.
-- **It does not model identity today.** No users, no accounts, no ownership. A deliberate boundary, not an omission.
+- **It does not model the student beyond the account.** A user is an authenticated identity that owns records. The product holds no course, branch, CGPA, eligibility, or placement-cell profile — those belong to the placement portal it deliberately sits downstream of.
+- **It does not require a registration number.** A student's college registration number is not a user identity and is not a prerequisite for using the product. Off-campus opportunities — which a student pursues without the placement cell involved at all — have no registration number attached, and the product must remain fully usable for them. Where it becomes relevant is on-campus: a registration number identifies a student *to their institution*, so it is the kind of detail that matters for eligibility or participation in an on-campus process. That makes it optional, opportunity-specific information — never the thing that says who a user is or which Events are theirs. Ownership is the account; nothing else.
 - **It does not notify.** It knows when things change and currently has no way to tell anyone; the user must come and look.
 - **It does not attempt to be authoritative over the mailbox.** When the two disagree, the mailbox wins.
 
@@ -343,7 +364,7 @@ Dependency direction is one-way, and preserving it is what keeps the boundaries 
 - Calibrate the confidence threshold against real review-queue outcomes instead of intuition.
 
 **Scalability**
-- Multi-user support: identity, ownership, isolation. The largest single piece of outstanding product-architecture work.
+- ~~Multi-user support: identity, ownership, isolation.~~ **Delivered** (RFC-001 / AC-5). Accounts, ownership on every record, and tenant isolation are implemented; it is no longer outstanding work.
 - Reduce interpretation cost per message via server-side filtering, so volume growth does not translate directly into AI spend.
 
 **Product**
@@ -375,7 +396,7 @@ Identity resolution — deciding that a new message describes an event already k
 Because most messages are partial. If absence is read as a negative assertion, every partial message erases good data — a venue correction with no date would wipe the date. Distinguishing silence from denial is what makes incremental accumulation safe, and it is the single most common place pipelines lose data quietly.
 
 **Q: What breaks first if usage grows?**
-Not throughput — per-message AI cost and the single-tenant data model. There is no ownership concept, so a second user requires identity and isolation work throughout. Ingestion also assumes a single running instance for its concurrency guard, so horizontal scaling requires distributed coordination before it is safe.
+Not throughput, and no longer the data model — ownership and isolation are implemented, so an additional user is an ordinary account rather than an architecture change. What remains is per-message AI cost, which scales linearly with mailbox volume and is the reason server-side filtering sits on the roadmap. Ingestion also assumes a single running instance for its concurrency guard, so horizontal scaling requires distributed coordination before it is safe.
 
 **Q: How would you know the system is wrong?**
 Today, incompletely. Change history is recorded but not surfaced, and sync statistics are logged but not retained. You can reconstruct what happened from logs; you cannot ask the system. That is the main observability gap and the reason it is listed under operational evolution.
@@ -386,7 +407,7 @@ Today, incompletely. Change history is recorded but not surfaced, and sync stati
 
 **High.**
 
-Statements about system behaviour — the status machine, the trust-gated update rule, the silence-versus-denial distinction, the review path, change-history retention, the single-tenant boundary, and the attachment-understanding capability — are derived directly from the source, including the Gmail, email, extraction, matching, event, and document-intelligence modules, the data model, and the client.
+Statements about system behaviour — the status machine, the trust-gated update rule, the silence-versus-denial distinction, the review path, change-history retention, the account-based ownership model and its per-owner Event uniqueness, and the attachment-understanding capability — are derived directly from the source, including the Gmail, email, extraction, matching, event, and document-intelligence modules, the data model, and the client.
 
 Statements about **users and their priorities** — student workload, the "superseded version" failure mode, the failure-preference ordering — are inferred from the system's design choices and the repository's own documentation. They are consistent with the code but are not independently validated by user research. Treat them as the product's operating hypothesis, and revise them if evidence contradicts them.
 

@@ -108,6 +108,38 @@ Three attributes, together, individuate a placement activity in this domain:
 
 Any two of these are insufficient. A company plus a round does not distinguish a first attempt from its rescheduled replacement. A company plus a date does not distinguish a morning test from an afternoon interview. All three together are what make an activity the specific activity it is.
 
+## Identity is scoped to an owner
+
+Those three attributes individuate an **activity in the world**. They do not, by themselves, individuate a **record in this system** — because the same activity is legitimately held by many people at once.
+
+This is the ordinary case, not an edge case. A placement cell announces one round to a few hundred students. Each student who uses Placement Tracker forms their own belief about that round from their own mailbox, revises it on their own evidence, and may confirm it by hand. Two things are being named here, and conflating them is the mistake this section exists to prevent:
+
+**The real-world activity** — one round, run once, by one company. There is exactly one of it.
+
+**The Event record** — one User's belief about that activity. There is one per User who heard about it.
+
+So the domain distinguishes identity at two levels:
+
+```
+                    User A                         User B
+                      │ owns                         │ owns
+                      ▼                              ▼
+                   Event                          Event
+              company|round|date              company|round|date
+                      └───────────┬────────────────┘
+                                  │  both describe
+                                  ▼
+                    ONE real-world placement round
+```
+
+Both rows are correct. Neither is a duplicate. They are two people's beliefs about one thing, and they must be able to diverge — B may confirm a venue that A never heard about, and A's confidence must never be revised by B's evidence.
+
+**The consequence for the recognition key: it identifies an Event within an owner, not globally.** The key is a description of the activity, so two users who receive the same broadcast necessarily produce the same key. Uniqueness is therefore asserted over the *pair* — owner plus key — and an Event is recognised only among the Events its owner already holds. A new observation can never be matched to an Event belonging to someone else, because that Event is not a candidate; it is not a proposition about this user's world at all.
+
+> *Previously:* the recognition key was globally unique. That was wrong for exactly this reason — the second student to receive a broadcast collided with the first and was handed back another person's Event. The constraint moved from the key alone to `(owner, key)` in the ownership migration (`20260802030000_require_ownership`). See `Event_Intelligence.md` for how owner-scoping bounds the candidate set during recognition.
+
+Ownership is also the one identity attribute that never changes. Company, round and date are all revisable — the section below is about how the domain survives that — but an Event does not change hands.
+
 ## The uncomfortable part: identity includes something that changes
 
 Time is one of the three distinguishing attributes — and time is exactly what a reschedule changes.
@@ -239,7 +271,9 @@ Boundaries are what keep the Event meaningful. An entity that absorbs everything
 
 **History** — how the Event reached its current values. Inside the boundary because an Event that cannot explain itself is incomplete.
 
-**Ownership** — conceptually inside the boundary: an Event is somebody's. It is **not modelled today**, because the system currently serves a single user with a single mailbox. This is a known boundary of the current implementation, not a claim that Events are ownerless. Any move to multiple users places ownership here, on the Event, not on the messages that produced it.
+**Ownership** — an Event is somebody's. Inside the boundary conceptually, and **modelled**: every Event carries the identity of the User who holds it, and that owner participates in the Event's identity rather than merely labelling it. See *Identity is scoped to an owner* below.
+
+> *Previously:* this document recorded ownership as conceptually inside the boundary but "not modelled today", because the system served a single user with a single mailbox. That is superseded. Ownership landed on the Event — not on the messages that produced it — which is where this document said it belonged.
 
 ## What deliberately does not belong
 
@@ -365,7 +399,9 @@ The Event *is* the system's durable state — the only place where "what is true
 **Lifecycle state** — believed, relocated, awaiting a person, or settled by one.
 **Provenance** — the append-only record of accepted changes.
 
-Two things are deliberately absent. There is **no pipeline state** on an Event: nothing about queues, retries, or processing. And there is **no ownership**, because the system is currently single-user; this is the boundary most likely to move.
+**Ownership** — which User holds this belief. Durable, set once, never reassigned.
+
+One thing is deliberately absent: there is **no pipeline state** on an Event — nothing about queues, retries, or processing.
 
 ---
 
@@ -591,7 +627,7 @@ Dependency direction is one-way, and it is the shape of the whole system:
 - **It does not carry processing state.** No queues, retries, or statuses belonging to the pipeline.
 - **It does not decide its own identity.** Recognition happens before adjudication; the Event is told which Event it is.
 - **It does not notify.** It changes; telling anyone is somebody else's job.
-- **It does not model ownership today.** Conceptually inside the boundary, deliberately unimplemented while the system is single-user.
+- **It does not model the user beyond ownership.** An Event records *whose* belief it is. Who that person is — their profile, their eligibility, their course — is the User's concern, not the Event's.
 
 ---
 
@@ -603,7 +639,7 @@ Dependency direction is one-way, and it is the shape of the whole system:
 - **Calibrate the acting threshold** against real review outcomes rather than intuition; it is the most sensitive parameter in the domain.
 
 **Scalability**
-- **Ownership on the Event**, when the system serves more than one user. It belongs on the Event, not on the messages that produced it.
+- ~~**Ownership on the Event**, when the system serves more than one user.~~ **Done.** Ownership sits on the Event, not on the messages that produced it, and scopes both recognition and every read.
 - **Recognition beyond exact text.** Identity resolution over inconsistent naming is currently lexical; semantic comparison would raise recall, and must not be allowed to raise false merges with it.
 
 **Product**
@@ -655,7 +691,7 @@ Today, mostly you would not — which is the honest answer and the most importan
 
 **High** for the domain model; **Medium** for one attribution, noted below.
 
-Every structural claim is derived directly from the source: the three-attribute basis of identity and its regeneration on reschedule; the tiered recognition strategy and its refusal to claim identity when the weakest tier yields more than one candidate; the confidence gate rejecting weaker updates; field-level updates restricted to fields an observation actually spoke about; the explicit-versus-unmentioned distinction that makes silence non-destructive, which appears both in update logic and in how trust is scored; the lifecycle states and their transitions; human confirmation raising trust to certainty and clearing doubt; and history written atomically with the change it describes.
+Every structural claim is derived directly from the source: the three-attribute basis of identity and its regeneration on reschedule; owner-scoped identity, verified against the Event model's `(owner, key)` uniqueness constraint, the ownership migration that replaced the global one, and a regression test asserting that two users may hold the same key; the tiered recognition strategy and its refusal to claim identity when the weakest tier yields more than one candidate; the confidence gate rejecting weaker updates; field-level updates restricted to fields an observation actually spoke about; the explicit-versus-unmentioned distinction that makes silence non-destructive, which appears both in update logic and in how trust is scored; the lifecycle states and their transitions; human confirmation raising trust to certainty and clearing doubt; and history written atomically with the change it describes.
 
 The claim that **history is immutable** is Medium confidence in attribution. There is no enforcement preventing edits — the property holds because nothing in the system modifies history and the design clearly intends append-only semantics. It is documented here as a domain law because that is what it must be, but a reader should know it is currently a convention rather than a constraint. If it matters, enforce it.
 

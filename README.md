@@ -105,15 +105,16 @@ Two properties worth noticing: **the pipeline has exactly one write point** — 
 | Layer | Choices |
 |---|---|
 | **Backend** | Node.js · TypeScript (strict, ESM/NodeNext) · Express 5 |
-| **Database** | PostgreSQL 16 · Prisma 7 with `@prisma/adapter-pg` over a `pg` pool · 14 migrations |
+| **Database** | PostgreSQL 16 · Prisma 7 with `@prisma/adapter-pg` over a `pg` pool · 21 migrations |
 | **Queue** | BullMQ over Redis (ioredis) · two queues · two dedicated worker processes |
 | **AI** | OpenAI `gpt-4o-mini` at `temperature: 0`, behind a provider interface with retry policy and typed errors. Optional — the system runs on deterministic patterns alone |
 | **Ingestion** | Google APIs (`gmail.readonly`), OAuth 2.0 with offline access and refresh tokens |
 | **Documents** | `pdf-parse` · `exceljs`, routed by a MIME-type parser registry |
 | **Frontend** | React 19 · Vite 8 · TypeScript · hand-written CSS |
-| **Testing** | Jest 30 · ts-jest · supertest — 7 suites, 115 tests, dependency-mocked (no database or Redis required) |
+| **Testing** | Jest 30 · ts-jest · supertest — 38 suites, 620 tests, dependency-mocked (no database or Redis required) |
 | **Infrastructure** | Docker Compose (PostgreSQL); Redis provisioned separately |
-| **Authentication** | Google OAuth for mailbox access only. **There is no user authentication and no multi-tenancy** — a deliberate, documented boundary, not an oversight |
+| **Authentication** | Google OAuth sign-in (PKCE + state), server-side sessions, double-submit CSRF on writes. Separately, a Google OAuth grant per connected mailbox (`gmail.readonly`) |
+| **Multi-tenancy** | Every record carries its owner. Each user's Events, emails, attachments and mailboxes are isolated to their account, enforced at the persistence boundary rather than by callers remembering to filter |
 
 ---
 
@@ -216,13 +217,13 @@ Full setup contract — every environment variable, the `DATABASE_URL` resolutio
 
 ## Current Status
 
-Single-user, locally run, and correct on the paths the handbook specifies.
+Multi-user and owner-scoped, and correct on the paths the handbook specifies. Each user signs in with Google and sees only their own placement Events.
 
 - ✅ **Project Foundation** — event model, extraction, confidence scoring, matching, review queue, React dashboard
 - ✅ **Gmail Ingestion** — OAuth, incremental cursor sync, scheduler, idempotent capture, attachment download and parsing
 - ✅ **Engineering Handbook** — product vision, canonical domain model, backend reasoning documentation, recognition decision matrix, development contract
 - ✅ **Architecture Conformance (Phase 2)** — AC-1 bounded the weakest recognition tier in time; AC-2 implemented ADR-006's identity gate; AC-3 made human confirmation authoritative over inference; AC-4 stopped placeholder companies from becoming matchable events. Each shipped with regression tests
-- 🚧 **Authentication & Multi-user Foundation (Phase 3)** — identity, ownership on the Event, isolation. The largest outstanding piece of product architecture, and deliberately deferred until the reconciliation problem was solved
+- ✅ **Authentication & Multi-user Foundation (Phase 3)** — Google sign-in, ownership on the Event, and tenant isolation enforced at the persistence boundary. Deliberately deferred until the reconciliation problem was solved, then delivered as AC-5 under [RFC-001](docs/rfcs/RFC-001-authentication-multi-user-foundation.md). The Event's recognition key became unique per owner rather than globally, so two students receiving the same placement broadcast each keep their own Event
 - ⬜ **Frontend Evolution** — surface change history, confidence and doubt, and attachment understanding, none of which currently have a user-facing expression
 - ⬜ **Production Readiness** — CI, retained sync and adjudication statistics, recognition-quality measurement, credential revocation as a visible account state
 
@@ -239,8 +240,6 @@ Realistic next phases, in roughly the order they matter.
 **Make the system observable.** Its central risk — a false merge — currently emits no error, no flag, and no anomaly. Recognition decisions now carry their basis (tier, attribute relation, candidate count, score); retaining and measuring them is what converts an invisible failure into a visible one.
 
 **Surface change history.** It is recorded faithfully and read by nobody. Until it has a surface, the one mechanism designed to explain a wrong answer cannot be used by the person who needs it.
-
-**Multi-user support.** Ownership belongs on the Event, not on the messages that produced it. It is not retrofittable cheaply, which is exactly why it is a phase rather than a patch.
 
 **Calibrate the acting threshold** against real review outcomes rather than intuition — which requires recording those outcomes first.
 
