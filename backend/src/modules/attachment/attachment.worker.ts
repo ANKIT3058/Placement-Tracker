@@ -26,12 +26,16 @@ const exitWhenDrained = process.env.WORKER_EXIT_WHEN_DRAINED === "true";
 // half of G-6. Failures rethrow so BullMQ applies the queue's retry backoff,
 // making processing retryable.
 //
-// IMPLEMENTED, NOT CURRENTLY EXECUTED IN PRODUCTION. No production runtime
-// starts this process: the API service runs no worker, and the only production
-// worker is a manually dispatched drain of `email-processing`. Attachment jobs
-// are still enqueued, so they accumulate with no consumer — assume this code
-// has never run against production data. Giving it a runtime is G-7.4; this
-// file only makes it safe to stop once it has one.
+// EXECUTED IN PRODUCTION as a manually dispatched batch drain (G-7.4):
+// `.github/workflows/production-attachment-worker.yml` runs this compiled
+// entrypoint with `WORKER_EXIT_WHEN_DRAINED=true`, the same run-to-drain model
+// the email worker uses. The API service still runs no worker; it only
+// produces, including through the attachment reconciler (G-7.3), whose
+// recovered jobs this process is now the consumer for.
+//
+// That workflow ships no `USE_AI` and no `OPENAI_API_KEY`, so the Document
+// Intelligence step below is inert in production until that is deliberately
+// changed.
 const worker = new Worker<AttachmentJobData>(
   QUEUE_NAMES.ATTACHMENT_PROCESSING,
   async (job) => {

@@ -1,0 +1,164 @@
+# One-shot batch drain of the attachment-processing queue.
+#
+# The sibling of production-worker.yml, and deliberately a SEPARATE workflow
+# rather than a second job or a queue input on that one. The two drains are
+# independent: they consume different queues, they are dispatched for different
+# reasons, and either must be runnable without touching the other's definition.
+#
+# This is a TEMPORARY runtime, not the worker's home, for the same reason the
+# email drain is: Render has no free tier for Background Workers, so until a
+# permanent host exists this workflow drains the backlog on demand. The worker
+# code is identical either way — the same compiled entrypoint runs here and on a
+# future Render Background Worker, and only WORKER_EXIT_WHEN_DRAINED differs
+# (see backend/src/modules/attachment/attachment.worker.ts).
+#
+# It is manual on purpose. There is no schedule, no push trigger and no
+# pull_request trigger: this job connects to production Redis, the production
+# database and Gmail, so it runs when a human decides it runs and never as a
+# side effect of a commit. The production-worker environment adds a required
+# reviewer on top of that, so the job pauses for approval before a single step
+# executes.
+name: Production Attachment Worker
+
+on:
+  workflow_dispatch:
+
+# Its OWN group, not the email drain's. Sharing one would serialise two drains
+# that have no reason to wait for each other — different queues, different jobs,
+# no shared state beyond Redis itself.
+#
+# Two concurrent attachment drains would not corrupt anything — BullMQ locks
+# each job, and G-7.1 made a replay resume from durable state rather than
+# restart — but they would spend the runner budget twice to do one queue's work.
+# Queue the second run instead of cancelling the first: a cancellation mid-drain
+# interrupts a job that is already holding its lock, and waiting is free.
+concurrency:
+  group: production-attachment-worker
+  cancel-in-progress: false
+
+# The job reads code and runs a process. It opens no pull request, pushes no
+# commit and publishes no package, so the default GITHUB_TOKEN is narrowed to
+# read-only.
+permissions:
+  contents: read
+
+jobs:
+  drain:
+    name: Drain attachment-processing
+    runs-on: ubuntu-latest
+
+    # The SAME environment as the email drain, deliberately. It already carries
+    # the required reviewer and scopes DATABASE_URL and REDIS_URL to worker jobs
+    # alone; this workflow needs exactly those two and no others, so a second
+    # environment would duplicate the secrets without adding a boundary.
+    environment: production-worker
+
+    # Matches the email drain's ceiling. It bounds the cases where the worker
+    # CANNOT exit — a wedged Redis, a paused queue — rather than the expected
+    # duration; the worker exits on its own once the queue is genuinely empty.
+    #
+    # Overrunning it is safe, which is why 30 minutes is enough even though an
+    # attachment job (a Gmail download plus a full PDF or spreadsheet parse) is
+    # far slower than an email job. Jobs are durable in Redis, their ids are
+    # deterministic, and the next run simply continues where this one stopped.
+    # The timeout also arrives as a signal, so the graceful path added in G-7.2
+    # handles it rather than abandoning the job that is running.
+    timeout-minutes: 30
+
+    # The repository is not a workspace root: backend/ is a self-contained npm
+    # project with its own package-lock.json, and every command here belongs to
+    # it. `uses:` steps are unaffected — checkout still lands in the workspace
+    # root.
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      # Pinned to a commit SHA rather than a tag. A tag is repointable by whoever
+      # controls it, and this job holds production database and Redis
+      # credentials — exactly the situation tag-pinning has burned people in.
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Nothing in the repository pins a Node version — no engines field, no
+      # .nvmrc — so it is stated here. Without it the runner image's preinstalled
+      # Node silently changes whenever GitHub rolls the image.
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: 'npm'
+          # Relative to the workspace root, not to working-directory above.
+          cache-dependency-path: backend/package-lock.json
+
+      # `npm ci` and not `npm install`: it installs the lockfile exactly and
+      # fails if package.json and the lock disagree. It also re-resolves the
+      # optional platform binaries for linux-x64 — the committed tree is
+      # developed on Windows.
+      - name: Install dependencies
+        run: npm ci
+
+      # The repository's own build command: prisma generate && tsc && node
+      # scripts/fix-esm-imports.js. All three stages are required. `tsc` emits
+      # the entrypoint; `prisma generate` is mandatory because generated/prisma
+      # is gitignored and therefore absent from a fresh checkout; and
+      # fix-esm-imports patches Prisma's extensionless imports, which Node ESM
+      # rejects.
+      - name: Build the backend
+        run: npm run build
+        env:
+          # NOT a secret, and deliberately a dead value.
+          #
+          # prisma.config.ts calls env("DIRECT_DATABASE_URL"), and that helper is
+          # eager: it throws at config-evaluation time, and the Prisma CLI loads
+          # the config for every command including generate. So the build cannot
+          # start without *something* here. Nothing reads the value — generate is
+          # offline codegen with no engine binary and no connection — so the real
+          # unpooled endpoint stays out of GitHub entirely. Migrations are applied
+          # deliberately from a workstation (docs/deployment.md §4.5), never here.
+          DIRECT_DATABASE_URL: postgresql://unused:unused@localhost:5432/unused
+
+      # Fails fast and legibly when the environment has no secrets yet. Checks
+      # presence only: `test -n` reads the variables without printing them, and
+      # the messages are literals. Without this the failure surfaces as a pg or
+      # ioredis stack trace several seconds later.
+      - name: Verify credentials are present
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: |
+          test -n "$DATABASE_URL" || { echo "DATABASE_URL is not set in the production-worker environment"; exit 1; }
+          test -n "$REDIS_URL" || { echo "REDIS_URL is not set in the production-worker environment"; exit 1; }
+
+      # The compiled entrypoint, run directly.
+      #
+      # NOT `npm run worker:attachment` — that script is `tsx watch`, a
+      # development file-watcher that never exits, which would defeat batch mode
+      # and hold the runner until the timeout.
+      #
+      # WORKER_EXIT_WHEN_DRAINED makes the worker own its own lifecycle (G-7.2):
+      # it processes the backlog, confirms the queue is genuinely empty (waiting,
+      # active, delayed, paused, prioritized and waiting-children all zero), then
+      # runs the graceful shutdown path and exits 0. Nothing here needs a sleep
+      # loop, a restart loop or a queue-inspection script.
+      #
+      # OPENAI_API_KEY and USE_AI are absent on purpose, and the omission matters
+      # more here than it does for email. `USE_AI` is the entire gate on Document
+      # Intelligence: with it unset the pipeline downloads, stores and parses, and
+      # makes no provider call and writes no DocumentIntelligence row. Enabling it
+      # in production is a separate, deliberate decision about cost and data
+      # egress — not something a runtime change should turn on as a side effect.
+      #
+      # ATTACHMENT_STORAGE_DIR is likewise unset, so downloaded bytes land under
+      # backend/storage/attachments on the runner and vanish with it. That is
+      # already how this pipeline behaves: the stored file is read only by the
+      # parser, inside the same job, and nothing in the codebase ever reads
+      # `storagePath` back. The durable artifact is the parsed text and structured
+      # data in PostgreSQL. Whether attachments should outlive their job at all is
+      # the open object-storage question, and this workflow does not decide it.
+      - name: Drain the queue
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          WORKER_EXIT_WHEN_DRAINED: 'true'
+        run: node dist/src/modules/attachment/attachment.worker.js
