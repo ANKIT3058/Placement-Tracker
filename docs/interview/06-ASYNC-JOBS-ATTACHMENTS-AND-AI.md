@@ -82,10 +82,14 @@ Email worker throws
    with the persisted Email's `userId`, that's either a forged payload or a broken
    invariant. No retry can fix either, so the job fails permanently and loudly.
 
-2. **Prisma `P2002` (unique violation) is swallowed.** Two workers racing to create the same
-   event: the loser gets a unique-constraint error on `(userId, eventKey)`. The worker logs
-   "Duplicate event detected" and **returns successfully**. Retrying would just reproduce
-   the same violation, and the desired end state — one event — already exists.
+2. **Prisma `P2002` (unique violation) is swallowed.** The worker logs "Duplicate event
+   detected" and **returns successfully** rather than retrying.
+
+   🕘 **This used to be the mechanism for the create race; it is now a residual safety
+   net.** `createEvent` handles its own conflict at the repository boundary — it re-reads
+   on a `P2002` that names `(userId, eventKey)` specifically and returns the winner's row,
+   so the loser gets an Event rather than aborting. The eventKey race no longer reaches
+   this catch. See [ch. 08 §4](08-RELIABILITY-IDEMPOTENCY-AND-TRANSACTIONS.md).
 
 **"What if the worker crashes mid-job?"**
 BullMQ marks the job stalled and re-delivers it. The email row is sitting at
@@ -93,10 +97,22 @@ BullMQ marks the job stalled and re-delivers it. The email row is sitting at
 Because matching finds the event by exact key and `detectChanges` returns zero changes, the
 re-run is a no-op. **The pipeline is idempotent by construction, not by a dedupe table.**
 
-**Honest gap:** if Redis is unreachable at enqueue time, the Email row exists at `pending`
-and no job exists — there is no sweeper that picks pending emails back up. The repository
-of `getPendingEmails` / `getFailedEmails` exists in `email.repository.ts` for exactly that,
-but nothing calls them yet. That's the right "what would you build next" answer.
+🕘 **This used to end with an honest gap, and that gap is closed.** It read: *"if Redis is
+unreachable at enqueue time, the Email row exists at `pending` and no job exists — there is
+no sweeper that picks pending emails back up… That's the right 'what would you build next'
+answer."*
+
+It was built. `email.reconciler.ts` sweeps `pending` Emails older than a configured age and
+re-enqueues them through the normal producer, on its own timer in the API process —
+deliberately not the Gmail scheduler's, since the failure that strands an email is exactly
+the moment Gmail sync is least healthy. It is safe to re-enqueue a row that already has a
+job: the reconciler cannot see Redis, and the deterministic `jobId` is what makes the
+duplicate collapse into the existing job.
+
+The guarantee is **at-least-once delivery with eventual processing — not exactly-once**,
+which is not achievable across Postgres and Redis and is not claimed. See
+[`docs/02_Backend/Gmail_Synchronization.md`](../02_Backend/Gmail_Synchronization.md) and
+[`docs/deployment.md §11.6`](../deployment.md#116-the-email-reconciler).
 
 ---
 

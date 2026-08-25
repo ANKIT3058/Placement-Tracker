@@ -56,10 +56,24 @@ crashed *after* writing but *before* setting the flag.
 change, and does nothing. Idempotency is a *property of the operation*, not a flag you have
 to remember to set. Nothing can drift out of sync with it.
 
-The one non-idempotent write is `createExtraction` — reprocessing writes a second
-`EmailExtraction` row. That's deliberate: it's an append-only log of *"the extractor was run
-on this email and produced this"*, and a second run genuinely is a second event worth
-recording.
+🕘 **This used to have one hole, and it is now closed.** `createExtraction` was a plain
+insert, so reprocessing appended a second `EmailExtraction` row. It was defended as an
+append-only log of *"the extractor was run and produced this"* — but every crash point in
+the email path converged on the same symptom: the insert ran, the job died before BullMQ
+acknowledged it, the stalled checker replayed it, and the row was written twice.
+
+**What closed it:** a `@@unique([emailId, userId])` constraint plus an upsert resolved on
+that key. Convergence is enforced by the **database**, not by the repository remembering to
+check. That distinction is the point — a `findFirst` before `create` is two statements with a
+window between them, and it would appear to work only for as long as worker concurrency
+stayed at 1, which is a scheduling accident rather than an invariant.
+
+Composite with `userId` rather than keyed on `emailId` alone, because `emailId` is unique
+only within an owner and the relation itself is composite. Keyed on the email alone, one
+tenant's replay could address another tenant's row.
+
+**LATEST WINS**, deliberately: the update branch rewrites the row, so it describes the
+attempt that actually completed rather than the one that crashed part-way through.
 
 ---
 
@@ -89,29 +103,186 @@ second one at the vacated slot.
 
 ## 4. Duplicate prevention when two workers race
 
-**Problem.** Two jobs for the same round processed concurrently. Both call
-`findByEventKey` → both get null → both insert.
+**Problem.** Two jobs for the same round processed concurrently. Both look up the key →
+both get null → both insert.
 
-**Naive.** Check-then-insert in the service. (This is exactly what `createEvent` does:
-`findFirst`, then `create`.)
+**Naive.** Check-then-insert, and stop there.
 
-**Fails.** Classic TOCTOU. The window between the check and the insert is small but real.
+**Fails.** Classic TOCTOU. The window between the check and the insert is small but real,
+and it is genuinely reachable: a stalled BullMQ job returned to `wait` by the stalled
+checker can run alongside the original attempt.
 
-**Code.** Two layers:
-1. The `findFirst` fast path handles the common sequential case.
-2. `@@unique([userId, eventKey])` makes the race *impossible to lose silently* — the second
-   insert gets Prisma `P2002`, and the email worker catches it:
-```ts
-if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-  console.log("Duplicate event detected");
-  return;    // success — do NOT retry
-}
+### 🕘 SUPERSEDED — how this used to be handled
+
+> **The old model.** `createEvent` did `findFirst` then `create`, and that was the whole of
+> its concurrency story. The loser of the race got a `P2002`, which propagated all the way
+> out of the repository, out of the service, and was caught in the **email worker**:
+>
+> ```ts
+> if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+>   console.log("Duplicate event detected");
+>   return;    // success — do NOT retry
+> }
+> ```
+>
+> **Why it was considered reasonable.** The application check is an optimisation; the
+> database constraint is the guarantee. Treating the violation as *success* is
+> directionally right — the desired end state already exists, and retrying would only
+> reproduce the violation three times before giving up.
+>
+> **The problem discovered.** The loser learned nothing. It aborted the whole job at
+> whatever point the insert failed, returning `undefined` instead of the Event the winner
+> had just created — so any work the job still had to do with that Event simply did not
+> happen. Worse, the catch matched **any** `P2002` from anywhere in the job, not just this
+> constraint: an unrelated unique violation was silently reported as a duplicate event and
+> swallowed. Recovery lived three layers away from the operation that needed it.
+
+### Current model — recover at the repository boundary
+
+`createEvent(owner, data, eventKey)` now handles its own race and always returns an Event:
+
+```
+findUnique({ userId_eventKey })        ← real unique lookup, not an approximation
+   │
+   ├─ found  ────────────────────────► return it
+   │
+   └─ not found → create(...)
+         │
+         ├─ succeeds ────────────────► return the new row
+         │
+         └─ throws
+               │
+               ├─ P2002 naming (userId, eventKey)
+               │     → re-read findUnique({ userId_eventKey })
+               │           ├─ found → return the winner's row
+               │           └─ not found → rethrow
+               │
+               └─ anything else → rethrow unchanged
 ```
 
-**Why it works.** The application-level check is an optimisation; the database constraint is
-the guarantee. And treating `P2002` as *success* rather than *failure* is correct: the
-desired end state — exactly one event — already exists. Retrying would just reproduce the
-same violation three times before giving up.
+**Three things changed, and each matters:**
+
+**1. The lookup is a real unique lookup.** `findUnique` on the composite selector
+`userId_eventKey`, not `findFirst` on a pair of columns. Since ownership landed, the key is
+unique *per owner*, so the composite selector is exactly the constraint — see *Deterministic
+event identity* above.
+
+**2. The recovery is constraint-specific.** The handler does not catch "a `P2002`". It
+checks that the error's `meta.target` names **both** `userId` and `eventKey`:
+
+> ⚠️ **Not all `P2002` errors are duplicate events.** Any other unique violation this insert
+> could in principle raise is a different conflict entirely and is rethrown unchanged. A
+> catch-all would swallow real defects and report them as benign.
+
+**3. The database is the concurrency authority, and the loser reads the answer.** On a
+conflict on *this* constraint, the other execution's row is the correct answer, so the loser
+re-reads and returns it. Both callers end up holding the same Event and both proceed
+normally.
+
+**The precise guarantee: idempotent convergence, not exactly-once.** The race is not
+prevented — it is *recovered from*. Two concurrent executions can both attempt the insert;
+the constraint decides, and the loser converges on the winner's row rather than failing.
+Repeating `createEvent` with the same `(owner, eventKey)` converges on one Event however
+many times it runs.
+
+**The worker's `P2002` catch still exists** and is unchanged. It is now a residual safety
+net rather than the mechanism: the eventKey race is resolved inside the repository before it
+can reach the worker at all.
+
+### Cross-tenant collisions are not collisions
+
+Uniqueness is `@@unique([userId, eventKey])` — **per owner, not global**:
+
+```
+User A  +  "amazon|OA|2026-08-20"   ─┐
+                                     ├─ two valid, independent rows
+User B  +  "amazon|OA|2026-08-20"   ─┘
+```
+
+Two students receiving the same placement broadcast produce the *same* key and must still
+hold two distinct Events. `createEvent` scopes both the lookup and the recovery re-read by
+owner, so one user's Event is never returned to another. This is asserted by a dedicated
+regression test.
+
+🕘 The key was globally unique until the ownership migration
+(`20260802030000_require_ownership`), which dropped `Event_eventKey_key` and created
+`Event_userId_eventKey_key`. Under the old index the second student to receive a broadcast
+collided with the first and was handed back **another person's Event**.
+
+---
+
+## 4a. Derived state — the consistency problem that was designed away
+
+**Problem.** The dashboard needs to know whether a round is still ahead of the student or
+already gone. Time moves; the database does not.
+
+**Naive.** Store it. Add an `isExpired` boolean or a `temporalStatus` column and keep it
+current.
+
+**Fails.** A stored answer to a question about *now* is wrong the moment "now" moves. It
+needs a background job to sweep and update rows, that job is another thing that can be down
+or lagging, and every row it has not reached yet is silently stale — in a system whose whole
+premise is that the user trusts it enough not to double-check.
+
+**Code.** Nothing is stored. `classifyTemporalStatus(event, now)` is a pure function, and
+`getEventsService` attaches its result on the way out.
+
+```
+STORED FACTS  (authoritative, in the database)
+   date              DateTime   — UTC midnight standing in for a calendar day
+   time              String?    — as extracted, e.g. "14:30"
+   isTimeEstimated   Boolean    — was that time inferred from a vague phrase?
+        │
+        │  classifyTemporalStatus(event, now)      pure, no I/O
+        ▼
+DERIVED STATE  (computed per read, never persisted)
+   temporalStatus    "upcoming" | "expired"
+```
+
+**There is no `temporalStatus` column.** It does not appear in the Prisma schema, no
+migration creates it, and nothing writes it. It exists only on the object the read path
+returns.
+
+**The consequence to say out loud:** *the same row can be `upcoming` on one request and
+`expired` on the next, with no write in between.* That is the correct behaviour, not a bug —
+the Event did not change; the clock did. And it means there is no cache to invalidate, no
+sweep job to keep running, and no row that can be stale.
+
+**No background job maintains this.** There is no expiry sweeper anywhere in the codebase.
+
+### How the classification actually works
+
+Two rules, and which one applies depends on whether the Event has a time worth trusting:
+
+| Case | Expiry rule |
+|---|---|
+| **Reliably timed** — `time` present, **not** estimated, and matching `HH:MM` | Expired once `now >= the scheduled instant`. The event has begun, so it is no longer something to be reminded is coming |
+| **Everything else** | Expired once its **IST calendar day has ended**, so a date-only Event stays upcoming for the whole day |
+
+**A guessed time must not expire anything.** `isTimeEstimated` marks a time the extractor
+inferred from a vague phrase — "morning" may have become `09:30`. Treating that as the
+moment the event starts would hide a real event on the strength of a guess. An unparseable
+time is handled the same way and for the same reason: absence of a usable clock value is
+never evidence that the event is over. Both fall back to the whole-day rule.
+
+**Boundary behaviour, exactly as the code has it:**
+
+- **`now` exactly at the scheduled instant** → **expired**. The comparison is `>=`.
+- **Date-only, today** → **upcoming**, all day. The comparison is `<` on IST day keys.
+- **Timezone** — the day is recovered in IST before the time is attached. Combining the raw
+  UTC instant with the time would shift the day for every event between 00:00 and 05:30 IST.
+- **Missing date** — not a case. `date` is non-nullable, and the viability gate refuses an
+  observation without one long before an Event exists.
+- There is no start/end pair. An Event has one instant, not an interval, so there is no
+  "ongoing" state and no equal-start-and-end case.
+
+**One `now` classifies a whole list.** It is a parameter rather than read inside the
+function, so two Events either side of a boundary can never be judged against different
+instants within a single response.
+
+**Where it is attached:** the list read (`getEventsService`) only. `getEventByIdService`
+returns the stored row without it. Worth knowing before assuming every Event-shaped object
+in the system carries the field.
 
 ---
 

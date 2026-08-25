@@ -67,6 +67,67 @@ to check. When in doubt, fail in the direction that leaves a signal.
 
 ---
 
+## Architecture Constraints
+
+Rules that are not obvious from reading a single file, and that a passing local
+check will not catch.
+
+**Keep OpenAI client construction in the leaf module.**
+`backend/src/modules/ai/openai-client.ts` owns `getOpenAIClient` and must import
+**nothing from this codebase** — the OpenAI SDK and nothing else. More generally:
+**nothing under `ai/` may import from a module that imports `ai/`.**
+
+The direction is the whole rule:
+
+```
+   openai (SDK)  ◄──  ai/openai-client  ◄──  ai/openai-provider  ◄──  ai/index
+                              ▲
+                              └──  extraction.service  (re-exports the symbol)
+                                          ▲
+                                          └──  document-intelligence extractors
+```
+
+This is not tidiness. `getOpenAIClient` used to live in `extraction.service`, and
+`ai/openai-provider` imported it from there, closing a cycle
+(`ai/index → structured-completion → openai-provider → extraction.service →
+ai/index`). **That cycle is harmless in production and fatal in tests.** Production
+runs ESM, where bindings are linked before any module body is evaluated. Jest runs
+the CommonJS output ts-jest produces, where `exports` is populated incrementally —
+so a module entered mid-cycle sees a half-built namespace. The symptom was
+`RetryPolicy is not a constructor`, in suites touching neither retries nor
+extraction.
+
+`extraction.service` still re-exports `getOpenAIClient`, so importing it from
+there compiles and is fine. What must not happen is an application import being
+added *to* `openai-client`.
+
+**Verify before assuming your change is safe.** The failure does not appear in
+`tsc`, in `npm run dev`, or in a production build — only under the test transform,
+and often in an unrelated suite:
+
+```bash
+cd backend && npx jest --no-cache
+```
+
+`--no-cache` matters: ts-jest caches diagnostics, so a warm cache can hide a
+module-resolution failure the next contributor will hit on a cold one.
+
+**Do not weaken a database constraint into an application check.** Several
+invariants here are enforced by unique constraints rather than by code
+remembering to look — `(userId, eventKey)` on Event, `(emailId, userId)` on
+EmailExtraction, `(attachmentId, userId)` on DocumentIntelligence. A `findFirst`
+before a `create` is two statements with a window between them; it appears to work
+only while worker concurrency stays at 1, which is a scheduling accident, not an
+invariant. Recover from the constraint violation instead — and match the specific
+constraint rather than catching any `P2002`.
+
+**Do not persist derived state.** Values that answer a question about *now* —
+`temporalStatus` is the current example — are computed on read from stored facts.
+Storing one buys a background sweeper, a staleness window, and a cache to
+invalidate, in exchange for nothing.
+
+---
+
 ## Documentation
 
 **The handbook evolves when architecture changes — not when code changes.**

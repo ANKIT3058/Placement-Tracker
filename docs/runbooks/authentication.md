@@ -46,14 +46,15 @@ and the tenant model are RFC-001 §8–§11.
 
 Complete authentication-relevant surface. Nothing else exists.
 
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| `GET` | `/gmail/auth` | No | Starts Google OAuth; `302` to Google |
-| `GET` | `/gmail/callback` | No | OAuth callback; resolves identity, links mailbox, **creates the session** |
-| `POST` | `/auth/logout` | No | Destroys the session and clears the cookie |
-| `POST` | `/gmail/sync` | **Yes** | Syncs the caller's own mailboxes |
-| `GET`/`POST`/`PATCH` | `/event`, `/event/:id` | **Yes** | Event read and write |
-| `POST` | `/email` | **Yes** | Manual email ingestion |
+| Method | Path | Auth | CSRF | Purpose |
+|---|---|---|---|---|
+| `GET` | `/gmail/auth` | No | No | Starts Google OAuth; `302` to Google. Bound by `state` + PKCE |
+| `GET` | `/gmail/callback` | No | No | OAuth callback; resolves identity, links mailbox, **creates the session**. Bound by `state` + PKCE |
+| `POST` | `/auth/logout` | No | **Yes** | Destroys the session and clears the cookie |
+| `POST` | `/gmail/sync` | **Yes** | **Yes** | Syncs the caller's own mailboxes |
+| `GET` | `/event`, `/event/:id` | **Yes** | No | Event reads |
+| `POST` | `/event` · `PATCH` `/event/:id` | **Yes** | **Yes** | Event writes |
+| `POST` | `/email` | **Yes** | **Yes** | Manual email ingestion |
 
 ⚠ **There is no `GET /auth/session`.** RFC-001 §15.1 specifies one; it is not
 implemented. A client cannot ask the backend whether it is signed in — the only
@@ -195,6 +196,117 @@ exactly that request. It is also why no state-changing route may be a `GET`.
 
 `__Host-` applies only when `Secure` is set and no `Domain` attribute is
 present; browsers reject the prefix otherwise. Hence it is production-only.
+
+## CSRF protection
+
+**Mechanism: double-submit cookie.** The server issues a random token in a
+*readable* cookie; the client echoes it in a request header; the server compares
+the two for equality. There is no server-side token store — the cookie **is** the
+expected value, which is what makes the comparison self-contained and why this
+change touches neither Redis nor Postgres.
+
+| | |
+|---|---|
+| Cookie | `placement.csrf` — **`httpOnly: false`**, `sameSite: "lax"`, `path: "/"`, `secure` in production only |
+| Header | `X-CSRF-Token` (read case-insensitively as `x-csrf-token`) |
+| Token | 32 random bytes, base64url — 43 characters, no percent-encoding |
+| Comparison | Exact string equality |
+| Rejection | `403 { success: false, message: "Invalid CSRF token" }` |
+
+**`httpOnly: false` is the mechanism, not an oversight.** The page must be able to
+read the value to echo it; a token the page cannot read cannot be
+double-submitted. It is safe to expose precisely because it grants nothing on its
+own — it is independent of `placement.sid`, authenticates nothing, and identifies
+no one. It only proves the caller could read a same-origin cookie. `placement.sid`
+stays `HttpOnly`.
+
+**Why it stops a forgery.** An attacker's page can cause a request to this API and
+the browser will attach cookies. That page cannot *read* `placement.csrf` (wrong
+origin) and cannot set the header without a preflight that CORS refuses. So it
+cannot produce a matching pair.
+
+### Issuance and validation are separate middleware — deliberately
+
+| | `ensureCsrfCookie` | `requireCsrf` |
+|---|---|---|
+| Mounted | **Globally**, in `app.ts`, after the session middleware | **Per route**, after `requireAuth` |
+| Does | Issues or re-sends the cookie. Never reads the header, never rejects | Compares cookie against header. Never issues |
+
+Combining them is the obvious shortcut and breaks two things at once: a signed-out
+visitor could not obtain a token (no other endpoint hands one out, and both the
+sign-in and logout flows need one), and a signed-out `POST` would answer `403 bad
+token` where `401 sign in` is the honest answer.
+
+**The token is stable.** An existing cookie is re-sent unchanged, never rotated
+per request — rotating would race the frontend, and two concurrent requests from
+one page would invalidate each other.
+
+**Ordering is load-bearing and pinned by test:** `requireAuth` runs first, so a
+signed-out caller learns they are signed out rather than being told to fix a token
+they were never going to have. And `requireCsrf` runs *before the handler*, so a
+refused request never reaches Prisma, the queue, the sync service, or
+`destroySession` — a 403 issued after the write has already happened protects
+nothing.
+
+### Which requests are protected
+
+**Not all of them.** CSRF is applied per route, to state-changing routes only:
+
+| Route | `requireAuth` | `requireCsrf` |
+|---|---|---|
+| `POST /event` | ✅ | ✅ |
+| `PATCH /event/:id` | ✅ | ✅ |
+| `POST /email` | ✅ | ✅ |
+| `POST /gmail/sync` | ✅ | ✅ |
+| `POST /auth/logout` | ❌ *(deliberate)* | ✅ |
+| `GET /event`, `GET /event/:id` | ✅ | ❌ — read |
+| `GET /gmail/auth`, `GET /gmail/callback` | ❌ | ❌ — see below |
+| `GET /`, `GET /health` | ❌ | ❌ — read |
+
+**Reads are exempt because they change nothing.** A cross-site `GET` that a
+forgery can cause still returns its response to an origin that cannot read it.
+The writes are the whole attack surface. There is no blanket
+method-based rule in the code — no middleware branches on `GET`/`HEAD`/`OPTIONS`;
+exemption is simply the absence of `requireCsrf` on a read route.
+
+**`POST /auth/logout` carries `requireCsrf` with no `requireAuth`** — the one
+place that ordering appears. Logout is intentionally unauthenticated and
+idempotent ("you are now logged out" is true either way, and a 401 would report
+whether the presented cookie was valid), so there is no authentication step for
+CSRF to follow and this check stands alone. It is still needed: an attacker page
+that can end a victim's session denies them the application.
+
+**The two OAuth entry routes are exempt, and not by oversight.** The browser
+arrives at `/gmail/callback` as a top-level navigation *from Google*, with no
+application code running to attach a header — forcing an application token onto it
+would break every sign-in. That leg carries its own binding instead: the OAuth
+`state` parameter and PKCE.
+
+### Why `POST /gmail/sync` is a POST
+
+The method is not cosmetic. `SameSite=Lax` sends the session cookie on cross-site
+top-level `GET` navigations, so the moment a route is protected by a session
+cookie, a `GET` form of it becomes CSRF-reachable from any page that can navigate
+the browser. Protecting it while leaving it a `GET` would have introduced the
+vulnerability that protecting it was meant to close. **This is the general rule
+for this codebase: no state-changing route may be a `GET`.**
+
+### How rejection looks, and what it does not tell you
+
+All four failure modes — missing cookie, missing header, empty value on either
+side, mismatch — return the **same** `403`. That is intentional: reporting which
+one failed tells a caller probing the endpoint how close they are, and echoing the
+submitted value would confirm what the server compared against. Tokens are
+compared and **never logged**; the two `console.warn` lines say only that a
+request was refused and why in general terms.
+
+An empty string is explicitly not a token — without that check, a caller
+presenting neither cookie nor header would compare `""` against `""` and pass.
+
+> **Operationally:** a sudden wave of `403 Invalid CSRF token` after a deploy
+> usually means the client is not sending the header, or the cookie was dropped
+> — check `SESSION_COOKIE_DOMAIN` and that the API and app share one origin.
+> It does **not** mean sessions are broken; a broken session answers `401`.
 
 ## Authentication middleware
 
@@ -431,12 +543,22 @@ Operationally relevant, all specified in RFC-001 and not implemented.
 
 | Gap | RFC | Operational effect |
 |---|---|---|
-| No OAuth `state` or PKCE | §10.1 | Callback is CSRF-open. A forced-login attack can put a victim into an attacker's tenant. **Do not expose this flow publicly.** |
 | No `GET /auth/session` | §15.1 | Client cannot determine sign-in status except by probing a protected route |
 | Callback returns JSON, not a redirect | §10.1 | Users land on a raw JSON page after sign-in |
 | Login and mailbox connection not separated | §10 | Reconnecting a mailbox also re-authenticates |
 | Refresh tokens stored in plaintext | §13.2 | Database read discloses long-lived mailbox credentials |
-| No CSRF token or origin validation | §11.4 | State-changing routes rely on `SameSite=Lax` alone |
+| No origin validation | §11.4 | Not adopted. Origin's survival across the Vercel → Render rewrite could not be established, and a control that fails closed on an unverified assumption would break every state-changing route on deploy. Double-submit CSRF was chosen instead — see *CSRF protection* |
+
+🕘 **Two gaps in this table have since been closed** and are recorded here so the
+history is not lost:
+
+- ~~**No OAuth `state` or PKCE** (§10.1) — "Callback is CSRF-open. A forced-login
+  attack can put a victim into an attacker's tenant."~~ **Closed.** The
+  authorization request now carries `state` and PKCE, and the callback verifies
+  both.
+- ~~**No CSRF token** (§11.4) — "State-changing routes rely on `SameSite=Lax`
+  alone."~~ **Closed.** Double-submit CSRF is implemented and enforced per route
+  — see the section below.
 
 ---
 
@@ -472,6 +594,13 @@ Google documentation before relying on it.
 document; `GOOGLE_CLIENT_ID`/`SECRET` were present in `.env` but no browser flow
 was run. The `curl` verification commands are constructed from the routes, not
 transcripts.
+
+**High for CSRF.** The mechanism, cookie and header names, token size, mounting
+points, per-route coverage, ordering relative to `requireAuth`, and the uniform
+`403` are read directly from `csrf.ts`, `app.ts`, and the four route modules that
+register `requireCsrf`. The endpoint/CSRF table was produced by exhaustive search
+for `requireCsrf` across `backend/src`, and the behaviour is exercised by a
+dedicated API suite.
 
 **Known stale elsewhere.** `Development_Environment.md` §9 still documents
 `GET /gmail/sync` and describes only the `gmail.readonly` scope. Both changed in
