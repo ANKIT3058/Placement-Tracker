@@ -56,6 +56,31 @@ const config = (file: string): string =>
     .filter((line) => !line.trim().startsWith("#"))
     .join("\n");
 
+// One named step's block, from its `- name:` line up to the next step at the
+// same indentation (or end of file).
+//
+// Scoping to a step is what makes a credential assertion mean something. A
+// variable present anywhere in the file proves nothing about the process that
+// needs it: the first production run failed precisely because a credential was
+// absent from the step that runs the worker, and a whole-file check would be
+// satisfied by the fail-fast step alone — or by a comment.
+const stepNamed = (file: string, name: string): string => {
+  const lines = config(file).split("\n");
+  const start = lines.findIndex((line) => line.trim() === `- name: ${name}`);
+
+  if (start === -1) {
+    throw new Error(`No step named "${name}" in ${path.basename(file)}`);
+  }
+
+  const indent = lines[start].indexOf("- name:");
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex(
+    (line) => line.indexOf("- name:") === indent && line.trim().startsWith("-"),
+  );
+
+  return (end === -1 ? rest : rest.slice(0, end)).join("\n");
+};
+
 // `tsc` emits `src/**` to `dist/src/**`, so a worker's compiled entrypoint is
 // its source path with the extension swapped. Deriving it here — rather than
 // writing the string twice — is what makes a moved worker a test failure.
@@ -103,11 +128,51 @@ describe("the attachment worker has a production runtime", () => {
     );
   });
 
-  test("it supplies exactly the credentials the worker needs", () => {
-    const workflow = read(ATTACHMENT_WORKFLOW);
+  // THE ASSERTION THAT SHOULD HAVE CAUGHT THE FIRST PRODUCTION RUN.
+  //
+  // Its earlier form named only DATABASE_URL and REDIS_URL — the email drain's
+  // two — so it passed against a workflow that could not authenticate to Gmail
+  // at all. Every job failed at the OAuth token refresh with
+  // `400 invalid_request`, and because per-job failures are handled by design
+  // the workflow still reported success: a green run that downloaded nothing.
+  //
+  // Named exhaustively now, and asserted against the DRAIN STEP rather than the
+  // file, so a credential that appears only in the fail-fast check above cannot
+  // satisfy it. This worker needs all four; the email worker needs two, because
+  // it never calls Gmail.
+  test("the drain step supplies every credential the worker needs", () => {
+    const drainStep = stepNamed(ATTACHMENT_WORKFLOW, "Drain the queue");
 
-    expect(workflow).toContain("DATABASE_URL: ${{ secrets.DATABASE_URL }}");
-    expect(workflow).toContain("REDIS_URL: ${{ secrets.REDIS_URL }}");
+    for (const secret of [
+      "DATABASE_URL",
+      "REDIS_URL",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+    ]) {
+      expect(drainStep).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    }
+  });
+
+  // The fail-fast step is what turns a missing credential into an immediate,
+  // legible failure instead of one 400 per attachment, forty jobs deep, under a
+  // workflow that still exits green.
+  test("the credential check verifies the Gmail OAuth credentials", () => {
+    const checkStep = stepNamed(
+      ATTACHMENT_WORKFLOW,
+      "Verify credentials are present",
+    );
+
+    for (const secret of [
+      "DATABASE_URL",
+      "REDIS_URL",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+    ]) {
+      // Both halves: the value has to reach the step's environment, and the
+      // step has to actually test it. Either alone is a check that cannot fail.
+      expect(checkStep).toContain(`${secret}: \${{ secrets.${secret} }}`);
+      expect(checkStep).toContain(`test -n "$${secret}"`);
+    }
   });
 
   test("it is manual only — no schedule, push or pull_request trigger", () => {

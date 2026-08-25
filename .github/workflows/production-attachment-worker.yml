@@ -122,13 +122,24 @@ jobs:
       # presence only: `test -n` reads the variables without printing them, and
       # the messages are literals. Without this the failure surfaces as a pg or
       # ioredis stack trace several seconds later.
+      #
+      # The two Google variables are checked here for a reason the first
+      # production run demonstrated. Without them the process starts, connects to
+      # Redis and Postgres, claims every job, and fails each one at the OAuth
+      # token refresh with `400 invalid_request` — then drains and exits 0, so
+      # the workflow reports success while having downloaded nothing. A missing
+      # credential must fail the run before the first job, not once per job.
       - name: Verify credentials are present
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         run: |
           test -n "$DATABASE_URL" || { echo "DATABASE_URL is not set in the production-worker environment"; exit 1; }
           test -n "$REDIS_URL" || { echo "REDIS_URL is not set in the production-worker environment"; exit 1; }
+          test -n "$GOOGLE_CLIENT_ID" || { echo "GOOGLE_CLIENT_ID is not set in the production-worker environment"; exit 1; }
+          test -n "$GOOGLE_CLIENT_SECRET" || { echo "GOOGLE_CLIENT_SECRET is not set in the production-worker environment"; exit 1; }
 
       # The compiled entrypoint, run directly.
       #
@@ -156,9 +167,28 @@ jobs:
       # `storagePath` back. The durable artifact is the parsed text and structured
       # data in PostgreSQL. Whether attachments should outlive their job at all is
       # the open object-storage question, and this workflow does not decide it.
+      #
+      # GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are this application's OWN
+      # OAuth client identity, not a user's credential — and this worker is the
+      # first background process that needs them.
+      #
+      # The email drain does not carry them because the email worker never calls
+      # Gmail: it processes bodies already persisted by the API service. This
+      # worker downloads from Gmail, so before any API call google-auth-library
+      # exchanges the mailbox's refresh token for an access token, and that POST
+      # carries client_id and client_secret alongside it (see `createOAuthClient`
+      # in gmail.service). Omit them and Google rejects the exchange with
+      # `400 invalid_request` — a malformed request, distinct from the
+      # `invalid_grant` a revoked mailbox returns.
+      #
+      # GOOGLE_REDIRECT_URI is deliberately NOT here. It is used only by
+      # `generateAuthUrl` and `getTokens` on the shared client, which serve the
+      # interactive consent flow; a refresh never sends it.
       - name: Drain the queue
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           WORKER_EXIT_WHEN_DRAINED: 'true'
         run: node dist/src/modules/attachment/attachment.worker.js
