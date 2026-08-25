@@ -12,7 +12,10 @@ module.exports = {
   // Jest's default testMatch also picks up any file literally named `test.ts`
   // (e.g. the manual Redis smoke-script src/infrastructure/redis/test.ts) plus
   // their compiled copies under dist/. Scoping to src/ + __tests__ excludes both.
-  roots: ["<rootDir>/src"],
+  // `scripts` is included alongside `src` so the one-off recovery tooling's
+  // selection logic can be tested. It adds no discovery risk: testMatch still
+  // requires a `__tests__` directory, and nothing else under scripts/ has one.
+  roots: ["<rootDir>/src", "<rootDir>/scripts"],
   testMatch: ["**/__tests__/**/*.test.ts"],
   // Production sources use ESM-style imports with explicit ".js" extensions
   // (e.g. "../event/event.repository.js"), which are correct for the NodeNext

@@ -14,6 +14,8 @@
     "migration:cleanup": "tsx scripts/migration/cleanup.ts",
     "migration:claim": "tsx scripts/migration/claim-legacy-data.ts",
     "migration:typecheck": "tsc -p scripts/migration/tsconfig.json",
+    "recovery:retry-attachments": "tsx scripts/recovery/retry-failed-attachments.ts",
+    "recovery:typecheck": "tsc -p scripts/recovery/tsconfig.json",
     "test": "jest",
     "test:redis": "tsx src/infrastructure/redis/test.ts"
   },
