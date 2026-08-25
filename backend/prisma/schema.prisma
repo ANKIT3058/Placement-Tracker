@@ -56,7 +56,71 @@ model User {
   events        Event[]
   eventUpdates  EventUpdate[]
 
+  // Singular and optional, like `Email.extraction` and `Attachment.intelligence`
+  // — enforced by `@@unique` on `StudentProfile.userId` rather than by anything
+  // here. Optional in the strong sense: a User with no profile row is a normal,
+  // fully functional account, not an incomplete one.
+  studentProfile StudentProfile?
+
   @@index([email])
+}
+
+// Optional student information about a User — currently the college
+// registration number, and nothing else (G-8.1).
+//
+// A SEPARATE MODEL RATHER THAN COLUMNS ON User, and that separation is the
+// architecture rather than tidiness. `User` is the authentication identity: it
+// answers "who is signed in" and "who owns this record", and Product Vision
+// states the product "does not model the student beyond the account" — no
+// course, branch, CGPA, or placement-cell profile. Putting a campus attribute
+// on `User` would make the authentication record carry institutional data and
+// invite the rest to follow. Keeping it here means the refusal is structural.
+//
+// NOT AN IDENTITY AND NOT A TENANT KEY. `User.id` remains the sole internal
+// identity and the only ownership boundary. `registrationNumber` appears in no
+// `eventKey`, no ownership predicate, and no tenant-scoping composite: nothing
+// in this model is referenced by Event, Email, EmailExtraction, GmailAccount,
+// Attachment or DocumentIntelligence, and it deliberately references none of
+// them either. It is information ABOUT a user, never a way of finding their
+// records.
+//
+// This table is unreferenced by application code as of G-8.1 — no repository,
+// service, route or frontend reads or writes it — so creating it is
+// behaviour-neutral.
+model StudentProfile {
+  id Int @id @default(autoincrement())
+
+  // The relation to User AND the one-per-user constraint in one column. Unlike
+  // every other `userId` in this schema, this is not a tenant key copied onto a
+  // child for scoping: `User` is the tenant root, so a plain foreign key is the
+  // whole relationship. That is why there is no composite `(id, userId)` here —
+  // there is no second path for an owner to disagree along.
+  userId Int @unique
+
+  // Nullable, and unique when present.
+  //
+  // NULLABLE because a profile may exist before its number is known, and
+  // because a user may never supply one at all — off-campus opportunities carry
+  // no registration number, and the product must stay fully usable without one.
+  // Postgres treats NULLs as distinct in a unique index, so any number of
+  // profiles may hold NULL simultaneously; the constraint binds only real
+  // values.
+  //
+  // UNIQUE because this deployment serves a single college, where a
+  // registration number identifies exactly one student. That is a property of
+  // the current deployment, not a law of the domain: it would not survive a
+  // second institution, and widening it is a deliberate future change rather
+  // than something to pre-build.
+  //
+  // Stored exactly as given. Every number in this college follows the `2023****`
+  // shape, so there is nothing to canonicalise and no normalized twin column.
+  registrationNumber String? @unique
+
+  // `Cascade` matches `GmailAccount`, the other child that hangs directly off
+  // `User`: a profile describes a user and has no meaning once that user is
+  // gone. Event and EventUpdate use `Restrict` instead, because they are
+  // records a deletion must not silently take with it.
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Event {
