@@ -1016,6 +1016,172 @@ harmless, and it is not evidence of a problem.
 
 **Dispatching a drain** — the only routine production operation: Actions → *Production Email Worker* → *Run workflow* → approve the `production-worker` environment prompt. It connects to production Redis and Postgres, which is why it is manual, gated, and never triggered by a commit.
 
+## 11.8 Production verification — the attachment pipeline (G-7)
+
+**Recorded 2026-08-25.** This section is *evidence*, not design. It states what
+was observed in production on that date and nothing more.
+
+> [!IMPORTANT]
+> Sections [§11.1](#111-two-runtimes-and-only-one-of-them-is-always-on),
+> [§11.2](#112-what-the-web-service-does--and-does-not--start),
+> [§11.3](#113-the-github-actions-drain) and
+> [§11.7](#117-operational-failure-modes) above were written when the attachment
+> worker had no production runtime, and still say so. They are superseded by
+> this section on that point. Reconciling their wording is separate outstanding
+> work; the disagreement is recorded here rather than quietly edited away.
+
+### Three levels of assurance, kept distinct
+
+| Level | What it establishes | Where it lives |
+|---|---|---|
+| **Implementation** | The code exists and is reviewable | Commits for the replay guard, graceful shutdown and batch drain, reconciliation, and the production runtime |
+| **Local / test verification** | The invariants cannot be violated *in the suite* — shutdown, drain conditions, replay safety, recovery selection | `npm test` |
+| **Production verification** | The pipeline actually ran against production Redis, Postgres and Gmail | **This section** |
+
+The first two were true for weeks before the third. That gap is the point of
+recording this separately: *"the code is correct"* and *"the code has run in
+production"* are different claims, and only the second is evidence of a working
+system.
+
+### What ran
+
+The **Production Attachment Worker** workflow, dispatched manually and approved
+through the `production-worker` environment. The worker received
+`DATABASE_URL`, `REDIS_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
+`WORKER_EXIT_WHEN_DRAINED=true`. Both the database and Redis connections
+succeeded.
+
+At the end of each run the worker logged, in order:
+
+```
+Queue attachment-processing drained, shutting down attachment worker...
+Attachment worker shut down successfully
+```
+
+That pair is the batch-drain lifecycle completing on its own terms: the drain
+condition reached zero across the six pending states, and the shutdown path ran
+to completion rather than the runner killing the process.
+
+### The recovery, in the order it happened
+
+An earlier run had failed **38** attachment-processing jobs with
+`invalid_request`, because that run was dispatched before the workflow carried
+the Gmail OAuth client credentials. Those jobs remained in Redis
+(`removeOnFail: false`), holding their deterministic ids.
+
+| Step | Observed |
+|---|---|
+| 1 | `attachment-13` recovered individually, `failed → waiting` |
+| 2 | A Production Attachment Worker run processed `attachment-13` successfully |
+| 3 | The remaining **37** jobs recovered, `failed → waiting` |
+| 4 | A subsequent run processed all **37** successfully |
+| **Result** | **All 38 previously failed jobs recovered and completed** |
+
+The canary-first order was deliberate: the failure being recovered from was one
+that produced a *green* workflow while doing no work, so a single job was proved
+end to end before the remaining thirty-seven were committed to.
+
+### What "completed" does and does not mean here
+
+A job completing means `DocumentProcessingService.process` returned without
+throwing — the attachment was downloaded from Gmail and stored, and parsing
+either succeeded or recorded a `parsingError` (parse failures are deliberately
+not rethrown). **It is not evidence that every attachment parsed cleanly**, and
+per-attachment parse outcomes were not inspected as part of this verification.
+
+Document Intelligence did **not** run, and is blocked twice over — see
+*Document Intelligence is blocked in production* below.
+
+### The attachment reconciler DID fire in production
+
+**Corrected 2026-08-25.** An earlier revision of this section stated that the
+reconciler's discovery path "has not yet been observed firing in production."
+That was wrong, and it understated what G-7 proved. It was inferred from the
+fact that the one-off retry tool performed the *failed-job* recovery, and never
+checked against the service logs. The record is corrected here rather than
+quietly rewritten.
+
+The reconciler runs in the API process and its own logs show it working:
+
+```
+[attachment-reconciler] Starting, interval 60000ms
+[attachment-reconciler] Recovered stranded attachments { enqueued: 31 }
+[attachment-reconciler] Recovered stranded attachments { enqueued: 31 }
+[attachment-reconciler] Recovered stranded attachments { enqueued: 25 }
+[attachment-reconciler] Recovered stranded attachments { enqueued: 4 }
+...
+[attachment-reconciler] Recovered stranded attachments { enqueued: 6 }
+```
+
+The falling counts — 31, 31, 25, 4 — are the sweep observing its own effect: as
+the worker drained the recovered jobs, fewer rows remained unfinished for the
+next sweep to find. The later steady `6` is a subsequent deploy's sweep against
+a different set of outstanding rows.
+
+**Two claims, and only the first is proven.**
+
+| | Claim | Status |
+|---|---|---|
+| **a** | The reconciler **discovers stranded attachments and enqueues them** in production | **PRODUCTION VERIFIED** — the log lines above |
+| **b** | The **complete end-to-end automatic path** — discovered, enqueued, and then processed to a finished attachment with no human step | **NOT YET VERIFIED** — see *The outstanding case* below |
+
+The distinction matters because the 38-job recovery above was **not** the
+reconciler's doing. Its predicate excludes `failed` rows by design, so that
+recovery went through the one-off retry tool, which moves an existing job from
+`failed` to `waiting` in place. Discovery and end-to-end recovery are separate
+claims and are recorded separately.
+
+### The outstanding case — `attachment-57`
+
+Observed **2026-08-25T13:03:10Z**:
+
+| Field | Value |
+|---|---|
+| `processingStatus` | `pending` |
+| `createdAt` | `2026-08-25T06:30:22Z` (~6.5 h old) |
+| `mimeType` | `…spreadsheetml.sheet` — a format the registry **does** parse |
+| `storagePath` / `processedAt` / `parsedAt` | all unset |
+| `parsingError` / `processingError` | none |
+| BullMQ job hash `attachment-57` | **does not exist** |
+| `attachment-processing` queue | empty on every count |
+
+So a durable row still owes work, no job represents it, and it is well past
+`ATTACHMENT_RECONCILE_MIN_AGE_MS`. It is squarely inside the reconciler's
+predicate and will be enqueued by the next sweep — but no sweep has run since
+**12:19Z**, because the API service is on Render's free tier and spins down
+without traffic. **Timers do not run while the instance is asleep**, so
+reconciliation is bursty rather than continuous, and recovery latency is
+therefore unbounded in practice. That is an infrastructure property, not a code
+defect.
+
+Claim **(b)** stays unverified until this row — or one like it — is observed
+reaching a finished state with no manual step.
+
+### Document Intelligence is blocked in production
+
+Two independent blockers, recorded separately because they need separate
+decisions:
+
+| Blocker | Detail |
+|---|---|
+| **`USE_AI` unset** | Neither worker workflow ships `USE_AI` or `OPENAI_API_KEY`, so `runDocumentIntelligence` returns before any provider call |
+| **Schema drift** | The repository contains migration `20260824120000_add_document_intelligence`; **production has not applied it**. The applied list ends at `20260823170000_add_email_extraction_unique`, and `public` contains no `DocumentIntelligence` table |
+
+Even with `USE_AI=true`, the write would therefore fail — harmlessly, since that
+call site is fail-soft, but with no understanding persisted.
+
+> [!NOTE]
+> This drift was **surfaced** by the G-7 verification, not caused by it. Applying
+> the migration is a deliberate production change and was explicitly **not**
+> performed as part of this work.
+
+### Non-fatal noise, recorded so it is not re-investigated
+
+| Message | Assessment |
+|---|---|
+| PostgreSQL `SECURITY WARNING: The SSL modes 'prefer', 'require', and 'verify-ca' are treated as aliases for 'verify-full'…` | A `node-postgres` client-side deprecation notice. A warning only; it did not affect processing |
+| GitHub Actions `Set up Node.js` — `Failed to restore: The server is busy` | A cache-restore miss. Non-fatal; the workflow succeeded |
+
 ---
 
 ## Related documentation
