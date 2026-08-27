@@ -2,6 +2,7 @@ import {
   cleanEmail,
   findDateEvidence,
   isResolvedCompany,
+  UNRESOLVED_COMPANY,
   type VenueMeta,
 } from "../email/email.parser.js";
 
@@ -81,6 +82,40 @@ const canonicalStage = (stage: unknown): string | null => {
   );
 };
 
+// One spelling per company, so one identity per company.
+//
+// `eventKey` is `${company}|${stage}|${date}` compared as an exact string, and
+// the two candidate queries behind tiers 2 and 3 compare `company` as SQL
+// equality. A company that arrives worded differently is therefore not a
+// cosmetic difference — it is a different Event. The first AI-enabled run
+// created two duplicate pairs this way: `Zanskar` beside `zanskar` (the model
+// supplied one, the patterns the other) and `Hindustan Unilever Ltd.` beside
+// `Hindustan Unilever Ltd` (the model was inconsistent with ITSELF across two
+// emails).
+//
+// The canonical form is the one the deterministic extractor already produces:
+// `email.service` lower-cases the body before extraction, so a pattern-derived
+// company is always lower case. This adopts that existing convention rather than
+// inventing one — it is what makes an AI-supplied company comparable to a
+// pattern-supplied one.
+//
+// The trailing period is the only punctuation removed, and only at the end:
+// "Ltd." and "Ltd" are the same company, while the interior dots in
+// "infrasphere projects pvt. ltd." carry the name and stay. This is identity
+// stability, not tidying — nothing else about the string is touched, and no
+// fuzzy comparison is introduced anywhere.
+//
+// A non-string reaches this only from the model's JSON, which is typed but never
+// runtime-validated. It becomes the placeholder rather than throwing: `extract()`
+// catches provider failures, not failures in the merge below it, so a `.trim()`
+// on a number would fail the whole job and burn a BullMQ retry. The placeholder
+// is also the honest answer — a number is not a company, and the viability gate
+// already knows what to do with one.
+const canonicalCompany = (company: unknown): string =>
+  typeof company === "string"
+    ? company.trim().replace(/\s+/g, " ").replace(/\.$/, "").toLowerCase()
+    : UNRESOLVED_COMPANY;
+
 export const mergeExtraction = (ai: any, regex: any) => {
   // AI returns a plain string; if AI extracted a venue, treat it as explicit.
   // Otherwise fall back to the VenueMeta from the regex layer.
@@ -109,9 +144,27 @@ export const mergeExtraction = (ai: any, regex: any) => {
     // `isResolvedCompany` rather than a truthiness check, because the extractor
     // substitutes the literal "unknown" when it finds nothing and that string is
     // truthy — the same distinction the viability gate makes.
-    company: isResolvedCompany(regex.company)
-      ? regex.company
-      : ai.company || regex.company,
+    //
+    // THE PREDICATE IS WHAT MAKES THIS RULE SAFE, and it was too weak. It used to
+    // accept anything that was not the literal placeholder, so the pattern layer's
+    // "https" counted as a resolved company and outranked whatever the model had
+    // read — Event 76, `https|OA|2026-08-27`, at confidence 1.0. It now delegates
+    // to the same `isValidCompany` the extractor applies to its own output, so a
+    // scheme fragment is not a company here either and the AI's value is used.
+    //
+    // The rule itself is unchanged: a usable deterministic company still wins,
+    // because it is the only stable producer of an identity token. What changed is
+    // that "usable" now means usable — and that the SAME test is applied to the
+    // model's answer, so a fragment cannot enter from that side either. Neither
+    // side usable falls through to the extractor's placeholder, which is what the
+    // viability gate is waiting for.
+    company: canonicalCompany(
+      isResolvedCompany(regex.company)
+        ? regex.company
+        : isResolvedCompany(ai.company)
+          ? ai.company
+          : regex.company,
+    ),
 
     // IDENTITY FIELD. Only a round this system already speaks may pass; anything
     // else falls back to the deterministic round exactly as a missing AI field

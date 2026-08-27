@@ -91,6 +91,11 @@ const NO_STAGE_EMAIL = "acme corp is visiting on 16th august 2027.";
 const NO_COMPANY_EMAIL =
   "the placement drive will be held on 16th august 2027. online test at 10 am.";
 
+// The shape that produced Event 76: the only "at <token>" in the body is a link,
+// so the pattern layer captured the bare scheme as the company.
+const URL_COMPANY_EMAIL =
+  "online test on 16th august 2027. for any queries please refer to the portal at https://track.example.com/abc";
+
 // A complete AI reply, in the shape the prompt asks for.
 const aiReply = (overrides: Record<string, unknown> = {}) => ({
   company: "infosys limited",
@@ -454,6 +459,125 @@ describe("company identity belongs to the deterministic extractor", () => {
     // Still the placeholder, so the viability gate still abandons it — the
     // existing behaviour for an observation with no identity anchor.
     expect(result.data.company).toBe("unknown");
+  });
+
+  // WHY THE PRECEDENCE RULE NEEDED A STRONGER PREDICATE.
+  //
+  // "deterministic wins" is only safe while "deterministic resolved a company"
+  // is a real test. It was not: the predicate rejected the literal placeholder
+  // and nothing else, so the pattern layer's "https" outranked whatever the
+  // model had read, and Event 76 was created as `https|OA|2026-08-27` at
+  // confidence 1.0. The rule is unchanged; what changed is that a fragment no
+  // longer counts as a deterministic answer.
+  test("a scheme fragment from the patterns does not beat a valid AI company", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: "Acme" }));
+
+    const result = await extract(URL_COMPANY_EMAIL);
+
+    expect(result.data.company).not.toBe("https");
+    expect(result.data.company).toBe("acme");
+  });
+
+  test("neither side usable still yields the placeholder", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: "https" }));
+
+    const result = await extract(URL_COMPANY_EMAIL);
+
+    expect(result.data.company).toBe("unknown");
+  });
+
+  // The model's JSON is typed but never runtime-validated. A non-string must not
+  // reach `.trim()` — `extract()` catches provider failures, not failures in the
+  // merge, so that would fail the job and burn a retry rather than degrade.
+  test("a non-string AI company degrades to the placeholder instead of throwing", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: 42 }));
+
+    await expect(extract(NO_COMPANY_EMAIL)).resolves.toMatchObject({
+      data: { company: "unknown" },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical company identity.
+//
+// The first AI-enabled run created two duplicate Event pairs, and neither was a
+// reconciliation failure: `zanskar` / `Zanskar` and `Hindustan Unilever Ltd` /
+// `Hindustan Unilever Ltd.` produce different `eventKey`s, and tiers 2 and 3
+// compare `company` as SQL equality, so the correct candidate was never even
+// loaded — nothing vetoed anything.
+//
+// One spelling per company is what closes that. The canonical form is the one
+// the patterns already emit (`email.service` lower-cases the body first), so
+// this adopts the existing convention rather than inventing one.
+// ---------------------------------------------------------------------------
+
+describe("company identity is canonical", () => {
+  beforeEach(() => {
+    process.env.USE_AI = "true";
+  });
+
+  // The exact production pair: the patterns supplied one spelling, the model the
+  // other. Both must land on the same identity whichever side wins.
+  test("casing cannot fork the identity", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: "Zanskar" }));
+    const fromAi = await extract(NO_COMPANY_EMAIL);
+
+    structuredCompletion.mockResolvedValue(aiReply({ company: "zanskar" }));
+    const fromPatterns = await extract(NO_COMPANY_EMAIL);
+
+    expect(fromAi.data.company).toBe("zanskar");
+    expect(fromAi.data.company).toBe(fromPatterns.data.company);
+  });
+
+  // The other production pair, and the one that proves the model contradicts
+  // ITSELF: both spellings came from the AI, on two different emails.
+  test("a trailing period cannot fork the identity", async () => {
+    structuredCompletion.mockResolvedValue(
+      aiReply({ company: "Hindustan Unilever Ltd." }),
+    );
+    const withPeriod = await extract(NO_COMPANY_EMAIL);
+
+    structuredCompletion.mockResolvedValue(
+      aiReply({ company: "Hindustan Unilever Ltd" }),
+    );
+    const withoutPeriod = await extract(NO_COMPANY_EMAIL);
+
+    expect(withPeriod.data.company).toBe("hindustan unilever ltd");
+    expect(withPeriod.data.company).toBe(withoutPeriod.data.company);
+  });
+
+  test.each([
+    ["surrounding whitespace", "  Zanskar  ", "zanskar"],
+    ["collapsed inner whitespace", "hindustan   unilever", "hindustan unilever"],
+    ["a newline between words", "Morphle\nLabs", "morphle labs"],
+    ["all three at once", "  Hindustan   Unilever Ltd. ", "hindustan unilever ltd"],
+  ])("normalises %s", async (_label, supplied, expected) => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: supplied }));
+
+    const result = await extract(NO_COMPANY_EMAIL);
+
+    expect(result.data.company).toBe(expected);
+  });
+
+  // Interior punctuation CARRIES the name and is deliberately preserved. Only a
+  // trailing period is dropped, so this is identity stability rather than tidying.
+  test("interior punctuation is preserved", async () => {
+    structuredCompletion.mockResolvedValue(
+      aiReply({ company: "Infrasphere Projects Pvt. Ltd." }),
+    );
+
+    const result = await extract(NO_COMPANY_EMAIL);
+
+    expect(result.data.company).toBe("infrasphere projects pvt. ltd");
+  });
+
+  test("a company the patterns resolved is already canonical and unchanged", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: "Infosys Limited" }));
+
+    const result = await extract(FULL_EMAIL);
+
+    expect(result.data.company).toBe("infosys");
   });
 });
 

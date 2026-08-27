@@ -64,6 +64,79 @@ describe("company extraction output is unchanged (AC-4)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// "at <company>" must not capture prose.
+//
+// Both of these reached production. `at https://track…` produced Event 76,
+// `https|OA|2026-08-27`, at confidence 1.0 and status `scheduled` — the company
+// scorer gives any non-placeholder string a perfect mark, so nothing downstream
+// questioned it. `at least …` produced `least|OA|…`, which then MATCHED a real
+// observation during the first AI-enabled run and absorbed its date, time and
+// venue, so this class is not inert junk.
+//
+// The fix is in the pattern, not in a global noise list: these words are only
+// misleading directly after "at".
+// ---------------------------------------------------------------------------
+
+describe("the 'at <company>' pattern rejects prose and links", () => {
+  test("a URL after 'at' does not become the company", () => {
+    const text =
+      "OA on 27th Aug. For any queries please refer to the portal at https://track.example.com/abc";
+
+    expect(extractCompany(text)).not.toBe("https");
+    expect(extractCompany(text)).toBe(UNRESOLVED_COMPANY);
+  });
+
+  test.each([["http"], ["https"], ["www"]])(
+    "'at %s…' does not become the company",
+    (scheme) => {
+      const url = scheme === "www" ? "www.example.com/x" : `${scheme}://example.com/x`;
+
+      expect(extractCompany(`Register at ${url}`)).not.toBe(scheme);
+    },
+  );
+
+  test("'at least' does not become the company", () => {
+    const text = "Please join at least 15 minutes before the OA on 20th Aug";
+
+    expect(extractCompany(text)).not.toBe("least");
+    expect(extractCompany(text)).toBe(UNRESOLVED_COMPANY);
+  });
+
+  test.each([["most"], ["all"], ["once"], ["any"]])(
+    "'at %s' does not become the company",
+    (word) => {
+      expect(extractCompany(`Submit at ${word} of the listed slots`)).not.toBe(word);
+    },
+  );
+
+  // The other half of the contract: the pattern still does its job.
+  test("a legitimate 'at <company>' is still extracted", () => {
+    expect(extractCompany("Interview at Acme on 20th Aug")).toBe("acme");
+  });
+
+  test("a name that merely begins with a rejected word is still extracted", () => {
+    // `all` is rejected only as a whole word — `\b` is what makes "allstate"
+    // survive. Without it this fix would silently delete real companies.
+    expect(extractCompany("Interview at Allstate on 20th Aug")).toBe("allstate");
+    expect(extractCompany("Interview at Mostly Labs on 20th Aug")).toBe("mostly labs");
+  });
+
+  // A rejected match must not abort the scan — the pattern is unanchored, so a
+  // real company later in the same sentence is still found.
+  test("a real company after a rejected one is still found", () => {
+    expect(extractCompany("Arrive at least 10 minutes early at Acme")).toBe("acme");
+  });
+
+  test("isValidCompany rejects a scheme fragment arriving from anywhere", () => {
+    // Defence in depth: the pattern can no longer produce these, but the
+    // predicate refuses them whatever route they take.
+    for (const fragment of ["https", "HTTP", "www"]) {
+      expect(isResolvedCompany(fragment)).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Quoted-chain removal.
 //
 // A reply carries the thread it answers, and that thread holds real dates

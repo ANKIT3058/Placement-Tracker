@@ -150,20 +150,37 @@ export const resolveDate = (text: string): Date | null => {
 // separate sentinels for separate attributes that happen to read alike.)
 export const UNRESOLVED_COMPANY = "unknown";
 
-// Whether an extracted company is a real value rather than the placeholder.
-// The viability gate uses this so an unresolved company is treated as a missing
-// company, which is what the Decision Model already specifies for it.
+// Whether an extracted company is a real value rather than a placeholder or a
+// fragment. The viability gate uses this so an unusable company is treated as a
+// missing company, which is what the Decision Model already specifies for it.
+//
+// It now delegates to `isValidCompany`, the check `extractData` already applied
+// to its own output, so there is ONE definition of "this is a company". They
+// disagreed before: `extractData` rejected the noise words, while this predicate
+// accepted anything that was not the literal placeholder — which is how "https"
+// reached an `eventKey` at confidence 1.0 (Event 76).
 export const isResolvedCompany = (company: unknown): company is string =>
-  typeof company === "string" &&
-  company.trim().length > 0 &&
-  company.trim().toLowerCase() !== UNRESOLVED_COMPANY;
+  typeof company === "string" && isValidCompany(company);
 
 export const extractCompany = (text: string): string => {
   const lowerText = text.toLowerCase();
 
   // Pattern 1: "at [Company]" — each word must start with a letter; skip leading "the"
+  //
+  // The lookahead rejects what follows "at" in ordinary prose rather than naming
+  // an organisation. Two production defects were the same shape: "at least 30
+  // minutes" produced the Event `least|OA|…`, and "at https://track…" produced
+  // `https|OA|…`. Both are "at" followed by something that is not a name.
+  //
+  // SCOPED TO THIS PATTERN, deliberately, and not added to the global noise list:
+  // these words are only misleading in this one position. `\b` after the group is
+  // what keeps a real name that merely begins with one of them — "at Allstate"
+  // still matches, because `all` is not followed by a word boundary there.
+  //
+  // A rejected match does not end the search: `String.match` keeps scanning, so
+  // "at least 30 minutes at Acme" still resolves to "acme".
   const atMatch = lowerText.match(
-    /\bat\s+(?:the\s+)?([a-z][a-z0-9&.]+(?:\s+[a-z][a-z0-9&.]+){0,3})/,
+    /\bat\s+(?:the\s+)?(?!(?:https?|www|least|most|all|once|any)\b)([a-z][a-z0-9&.]+(?:\s+[a-z][a-z0-9&.]+){0,3})/,
   );
   if (atMatch?.[1]) {
     let company = atMatch[1].trim();
@@ -354,13 +371,23 @@ export const extractVenue = (text: string): VenueMeta => {
 };
 
 const isValidCompany = (company: string) => {
-  if (!company || company === "unknown") return false;
+  const value = company.trim();
 
-  // reject obvious noise words
-  if (/^(for|the|list|students|all|our|dear|you|this)$/i.test(company)) return false;
+  // `trim()` and a case-insensitive comparison, matching what `isResolvedCompany`
+  // has always done. The extractor only ever emits lower case, so this changes no
+  // existing outcome — it just stops the two predicates disagreeing about a value
+  // that arrives from anywhere else.
+  if (!value || value.toLowerCase() === UNRESOLVED_COMPANY) return false;
+
+  // Reject obvious noise words. `https|http|www` are URL scheme fragments the
+  // "at <company>" pattern captures out of a link — the whole match stops at the
+  // `:` or `.`, leaving a bare scheme. They are rejected here as well as in the
+  // pattern itself, so a fragment arriving from any other route is still refused.
+  if (/^(https?|www|for|the|list|students|all|our|dear|you|this)$/i.test(value))
+    return false;
 
   // require at least 2 chars — single-word companies like Google/TCS/Amazon are valid
-  if (company.length < 2) return false;
+  if (value.length < 2) return false;
 
   return true;
 };
