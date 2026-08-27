@@ -256,3 +256,74 @@ describe("the email drain is unchanged by G-7.4", () => {
     expect(config(EMAIL_WORKFLOW)).not.toContain("attachment");
   });
 });
+
+// The email drain runs AI-assisted extraction; the sibling drain still does not.
+//
+// `USE_AI` is read at two independent call sites — the email extraction branch
+// and the Document Intelligence step — so enabling it for one queue's runtime
+// says nothing about the other. That asymmetry is the contract this block pins,
+// which is why the assertions here sit beside (and not instead of) the absence
+// assertion the other workflow's suite already carries.
+//
+// ASSERTED AGAINST THE STEP, not the file, for the reason the credential test
+// above records: a variable present anywhere in the workflow proves nothing
+// about the process that needs it. `USE_AI` reaching the fail-fast step but not
+// the drain step would leave extraction regex-only while every check passed.
+describe("the email drain runs the AI-assisted extraction path", () => {
+  test("the drain step enables the AI branch with the exact opt-in string", () => {
+    // `extraction.service` compares against the literal "true". Any other value
+    // — a missing quote, a capitalised TRUE — is silently off, and the run would
+    // look identical while extracting nothing differently.
+    expect(stepNamed(EMAIL_WORKFLOW, "Drain the queue")).toContain(
+      "USE_AI: 'true'",
+    );
+  });
+
+  test("the drain step supplies the OpenAI secret", () => {
+    // Required rather than optional now: `getOpenAIClient` throws when the key
+    // is absent, `extract()` catches that, and the email degrades to regex — so
+    // the omission would be invisible in the run's output.
+    expect(stepNamed(EMAIL_WORKFLOW, "Drain the queue")).toContain(
+      "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+    );
+  });
+
+  test("the drain step still supplies every credential it needed before", () => {
+    // Enabling AI must not displace the two the worker cannot run without.
+    const drainStep = stepNamed(EMAIL_WORKFLOW, "Drain the queue");
+
+    for (const secret of ["DATABASE_URL", "REDIS_URL"]) {
+      expect(drainStep).toContain(`${secret}: \${{ secrets.${secret} }}`);
+    }
+  });
+
+  test("the credential check verifies the OpenAI key", () => {
+    const checkStep = stepNamed(EMAIL_WORKFLOW, "Verify credentials are present");
+
+    // Both halves, as in the sibling suite: the value has to reach the step's
+    // environment, and the step has to actually test it. Either alone is a
+    // check that cannot fail.
+    expect(checkStep).toContain("OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}");
+    expect(checkStep).toContain('test -n "$OPENAI_API_KEY"');
+  });
+
+  test("the credential check still verifies the database and Redis", () => {
+    const checkStep = stepNamed(EMAIL_WORKFLOW, "Verify credentials are present");
+
+    for (const secret of ["DATABASE_URL", "REDIS_URL"]) {
+      expect(checkStep).toContain(`${secret}: \${{ secrets.${secret} }}`);
+      expect(checkStep).toContain(`test -n "$${secret}"`);
+    }
+  });
+
+  test("enabling AI here does not enable it for the other queue", () => {
+    // The same assertion the other suite makes, restated from this side because
+    // this is the change that could plausibly have carried across. Document
+    // Intelligence stays off: its gate is a separate decision about cost and
+    // data egress, taken separately.
+    const other = config(ATTACHMENT_WORKFLOW);
+
+    expect(other).not.toContain("USE_AI");
+    expect(other).not.toContain("OPENAI_API_KEY");
+  });
+});

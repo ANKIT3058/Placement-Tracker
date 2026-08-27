@@ -106,13 +106,22 @@ jobs:
       # presence only: `test -n` reads the variables without printing them, and
       # the messages are literals. Without this the failure surfaces as a pg or
       # ioredis stack trace several seconds later.
+      #
+      # OPENAI_API_KEY is checked alongside the other two because this drain now
+      # runs with USE_AI=true. Without the key `getOpenAIClient()` throws on the
+      # first email, `extract()` catches it, and every job silently falls back to
+      # regex — a green run whose extraction quality is quietly the old one. A
+      # missing credential must fail the run before the first job, not once per
+      # job and invisibly.
       - name: Verify credentials are present
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           test -n "$DATABASE_URL" || { echo "DATABASE_URL is not set in the production-worker environment"; exit 1; }
           test -n "$REDIS_URL" || { echo "REDIS_URL is not set in the production-worker environment"; exit 1; }
+          test -n "$OPENAI_API_KEY" || { echo "OPENAI_API_KEY is not set in the production-worker environment"; exit 1; }
 
       # The compiled entrypoint, run directly.
       #
@@ -126,14 +135,27 @@ jobs:
       # runs the graceful shutdown path and exits 0. Nothing here needs a sleep
       # loop, a restart loop or a queue-inspection script.
       #
-      # OPENAI_API_KEY and USE_AI are absent on purpose. With USE_AI unset the
-      # extractor is regex-only: deterministic, free, and one fewer secret and
-      # one fewer external dependency in the run we have the least evidence
-      # about. AI extraction can come later, once this mechanism has proven
-      # itself.
+      # USE_AI turns on the AI-assisted branch of email extraction, which has
+      # existed in `extraction.service` all along and was gated off here. It is
+      # the ONLY thing that flag does in this process: `extract()` still runs the
+      # deterministic patterns on every email and still merges AI over regex
+      # field by field, and any provider failure is already caught there and
+      # degrades the email back to regex-only. So this changes extraction
+      # QUALITY, not the drain's control flow — no job fails because OpenAI did.
+      #
+      # OPENAI_API_KEY is therefore now required, not optional. `getOpenAIClient`
+      # reads it lazily on the first gated call and throws when it is absent; the
+      # fail-fast step above exists so that absence stops the run rather than
+      # turning it into a silently regex-only one.
+      #
+      # This does NOT enable Document Intelligence. `USE_AI` is read at two
+      # independent call sites, and the other one lives in the sibling workflow
+      # for the other queue, which deliberately still ships neither variable.
       - name: Drain the queue
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           WORKER_EXIT_WHEN_DRAINED: 'true'
+          USE_AI: 'true'
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node dist/src/workers/email.worker.js
