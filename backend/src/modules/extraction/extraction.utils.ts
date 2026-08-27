@@ -1,4 +1,9 @@
-import { cleanEmail, findDateEvidence, type VenueMeta } from "../email/email.parser.js";
+import {
+  cleanEmail,
+  findDateEvidence,
+  isResolvedCompany,
+  type VenueMeta,
+} from "../email/email.parser.js";
 
 // A full calendar date is only trustworthy when the source text actually says
 // which day and month it is. The AI can turn a standalone year ("in 2027") or
@@ -41,6 +46,41 @@ export const validateAIDate = (
   return isSupported ? candidateDate : null;
 };
 
+// The rounds the deterministic extractor can produce, and therefore the only
+// round labels allowed to reach an `eventKey`.
+//
+// NOT A NEW VOCABULARY. These are exactly the values `extractStage` returns in
+// email.parser.ts, which the extraction prompt already restates back to the
+// model. Naming them here gives the merge something to check the model's answer
+// against; it introduces no spelling the system was not already using.
+const CANONICAL_STAGES = ["OA", "Interview", "PPT", "Registration"] as const;
+
+// The model's round, if it is one this system already speaks — otherwise null.
+//
+// Matched case-insensitively and returned in the CANONICAL spelling, because
+// the repository already treats round comparison as case-insensitive:
+// `classifyRoundIdentity` and `scoreEventMatch` both lower-case each side
+// before comparing. So "interview" and "Interview" are already the same round
+// to the engine; what this adds is that only one of those spellings may become
+// part of an identity key, where comparison is exact.
+//
+// DELIBERATELY NOT A SYNONYM TABLE. "Online Assessment" is rejected rather than
+// mapped to "OA": no established mapping exists in this repository to reuse,
+// and inventing one would put an unreviewed guess into `eventKey`. A rejected
+// round falls back to the deterministic one, which is the same thing that
+// already happens for every other absent AI field.
+const canonicalStage = (stage: unknown): string | null => {
+  if (typeof stage !== "string") return null;
+
+  const normalized = stage.trim().toLowerCase();
+
+  return (
+    CANONICAL_STAGES.find(
+      (canonical) => canonical.toLowerCase() === normalized,
+    ) ?? null
+  );
+};
+
 export const mergeExtraction = (ai: any, regex: any) => {
   // AI returns a plain string; if AI extracted a venue, treat it as explicit.
   // Otherwise fall back to the VenueMeta from the regex layer.
@@ -50,8 +90,37 @@ export const mergeExtraction = (ai: any, regex: any) => {
       : (regex.venue as VenueMeta);
 
   return {
-    company: ai.company || regex.company,
-    stage: ai.stage || regex.stage,
+    // IDENTITY FIELD. `company` and `stage` are the two extracted values that
+    // become an `eventKey` (`${company}|${stage}|${date}`), and all three
+    // recognition tiers compare them EXACTLY — `findByEventKey` on the whole
+    // key, `findNearbyEvents` and `findByCompanyAndStage` on `company` (and
+    // `stage`) as SQL equality. An identity token therefore has to be stable
+    // across re-extractions of the same email, and the deterministic extractor
+    // is the only producer that is: with `USE_AI=true` extraction is
+    // nondeterministic (see extraction.repository), and every Event already in
+    // the database was keyed from a deterministic company.
+    //
+    // So the deterministic company wins whenever it resolved one, and the AI's
+    // wording is used only where there is no identity to preserve. That is not
+    // a demotion of the AI: an unresolved company is ABANDONED by the viability
+    // gate in email.service, so this is precisely the case where an AI company
+    // turns a discarded email into an Event.
+    //
+    // `isResolvedCompany` rather than a truthiness check, because the extractor
+    // substitutes the literal "unknown" when it finds nothing and that string is
+    // truthy — the same distinction the viability gate makes.
+    company: isResolvedCompany(regex.company)
+      ? regex.company
+      : ai.company || regex.company,
+
+    // IDENTITY FIELD. Only a round this system already speaks may pass; anything
+    // else falls back to the deterministic round exactly as a missing AI field
+    // would. Without this an off-vocabulary label ("Online Assessment" for what
+    // the patterns call "OA") produces a key no existing Event can match, the
+    // identity gate then CONTRADICTS the correct candidate at tier 2, and the
+    // observation becomes a duplicate Event instead of an update.
+    stage: canonicalStage(ai.stage) ?? regex.stage,
+
     date: ai.date || regex.date,
     time: ai.time ?? regex.time,
     venue: venueMeta.value,   // plain string | null — used by DB writes & confidence scoring
