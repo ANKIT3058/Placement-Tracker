@@ -248,3 +248,101 @@ describe("a successful save reports no error", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
+
+/* Phase 6 — what the reviewer sees and can do WHILE a save is in flight.
+ *
+ * A confirmation is a write, and the one failure mode a write must not
+ * have is happening twice. These pin the three things that prevent it
+ * and the feedback that explains why the card has gone quiet. */
+
+describe("a save in flight", () => {
+  /* Hold the request open so the in-flight state can be observed. */
+  const holdSave = () => {
+    let release!: () => void;
+
+    vi.mocked(updateEvent).mockReturnValue(
+      new Promise((resolve) => {
+        release = () => resolve({});
+      }),
+    );
+
+    return () => release();
+  };
+
+  it("disables the button so a second click cannot land", () => {
+    holdSave();
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    const button = screen.getByRole("button", { name: /confirm & save/i });
+    fireEvent.click(button);
+
+    expect(button).toBeDisabled();
+  });
+
+  it("says what is happening rather than going blank", () => {
+    holdSave();
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm & save/i }));
+
+    expect(screen.getByRole("button", { name: /saving/i })).toBeInTheDocument();
+  });
+
+  /* `aria-busy` is what makes the state available to a screen reader,
+     and — since Phase 6 — what keeps the button legible while it is
+     disabled, so it is worth pinning rather than leaving implicit. */
+  it("marks itself busy for assistive technology", () => {
+    holdSave();
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm & save/i }));
+
+    expect(screen.getByRole("button", { name: /saving/i })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+  });
+
+  /* The fields are frozen too: an edit made mid-flight would not be in
+     the request already on the wire, so accepting it would show the
+     reviewer a value the server never received. */
+  it("freezes the fields it is submitting", () => {
+    holdSave();
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm & save/i }));
+
+    expect(screen.getByDisplayValue("amazon")).toBeDisabled();
+    expect(screen.getByDisplayValue("OA")).toBeDisabled();
+  });
+
+  /* The guard behind the disabled attribute. Three clicks, one PATCH. */
+  it("sends exactly one request however many times it is clicked", async () => {
+    const release = holdSave();
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    const button = screen.getByRole("button", { name: /confirm & save/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await waitFor(() => expect(updateEvent).toHaveBeenCalledTimes(1));
+
+    release();
+    await waitFor(() => expect(updateEvent).toHaveBeenCalledTimes(1));
+  });
+
+  it("becomes usable again once the save resolves", async () => {
+    const release = holdSave();
+    render(<ReviewCard event={reviewEvent} refresh={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm & save/i }));
+    release();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /confirm & save/i }),
+      ).toBeEnabled(),
+    );
+  });
+});

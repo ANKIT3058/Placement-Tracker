@@ -218,12 +218,34 @@ export default function Dashboard() {
   );
 
   const stageLabel = activeStage.pattern ? activeStage.label : null;
-  const noMatchDescription =
+
+  /* One concise line, not a panel. Narrowing a list is an ordinary thing
+     to do and an ordinary thing to undo — the search box and the stage
+     chips are both still on screen, directly above — so a dashed card
+     with an icon, a heading and a sentence of advice was answering a
+     question nobody had asked. It still says WHICH filter emptied the
+     list, because that is the part a student cannot see for themselves
+     when both are applied at once. */
+  const noMatchMessage =
     term && stageLabel
-      ? `No ${stageLabel} events match “${term}”. Try another stage or term.`
+      ? `No ${stageLabel} events match “${term}”`
       : term
-        ? `No company matches “${term}”. Try a shorter or different term.`
-        : `No ${stageLabel} events coming up. Pick another stage to see more.`;
+        ? `No events match “${term}”`
+        : `No ${stageLabel} events coming up`;
+
+  /* SKELETONS ONLY WHEN THERE IS NOTHING TO SHOW YET.
+     `loading` is true for the first load AND for every `refresh()` a
+     child triggers, so confirming one review event or extracting one
+     email replaced the entire page — five real cards became three
+     placeholders and the whole section went `aria-busy` — for the
+     length of a round trip. A local action produced a global loading
+     state that read as a page reload.
+
+     Keyed on the data rather than on a second flag: if there is
+     something to show, showing it beats replacing it with a guess of
+     itself. The first load still gets skeletons because there is
+     genuinely nothing to draw. */
+  const showSkeletons = loading && events.length === 0;
 
   return (
     <div className="dashboard">
@@ -284,7 +306,7 @@ export default function Dashboard() {
               number field and only then reached the events. They are
               maintenance, not the reason anyone opens this page; the order
               now says so. Nothing about them changed except where they are. */}
-          {loading ? (
+          {showSkeletons ? (
             <section className="section" aria-busy="true">
               {/* Mirrors the loaded section header so the heading doesn't
                   appear out of nowhere once the fetch resolves. */}
@@ -401,11 +423,7 @@ export default function Dashboard() {
                     }
                   />
                 ) : visibleEvents.length === 0 ? (
-                  <EmptyState
-                    icon="search"
-                    title="No matching events"
-                    description={noMatchDescription}
-                  />
+                  <EmptyState icon="search" compact title={noMatchMessage} />
                 ) : (
                   <div className="cards-grid">
                     {visibleEvents.map((e) => (

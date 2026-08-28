@@ -100,6 +100,15 @@ export default function ReviewCard({
   const [error, setError] = useState<string | null>(null);
 
   const handleConfirm = async () => {
+    /* The button is `disabled` in flight, so a second click cannot reach
+       this — but the guard is what the two sibling handlers in this app
+       (Dashboard's logout, StudentProfileSection's submit) already use,
+       and it holds even if this is ever invoked without going through
+       the button. Cheap insurance against a duplicate PATCH. */
+    if (saving) {
+      return;
+    }
+
     setSaving(true);
     /* Cleared per attempt, so a stale failure never sits alongside a fresh
        retry. */

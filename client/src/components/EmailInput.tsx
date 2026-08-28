@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { processEmail } from "../api/emailApi";
 
 /* Inline icons — no icon dependency, and they inherit `currentColor`
@@ -95,13 +95,35 @@ export default function EmailInput({ refresh }: { refresh: () => void }) {
       setText("");
       setSuccess(true);
       refresh();
-      setTimeout(() => setSuccess(false), 3000);
     } catch (err) {
       setError(messageForError(err));
     } finally {
       setLoading(false);
     }
   };
+
+  /* The success message clears itself after a few seconds.
+   *
+   * AS AN EFFECT, NOT A TIMER STARTED INSIDE THE HANDLER. The handler's
+   * `setTimeout` had no cleanup, so it kept a pending write to state
+   * after the component unmounted — which happens for real, when a
+   * refresh comes back 401 and the Dashboard stops rendering this
+   * section — and back-to-back submissions stacked timers, letting the
+   * first one clear the second one's message early.
+   *
+   * Both go away here: the cleanup cancels on unmount, and because
+   * `handleSubmit` sets `success` back to false before every attempt,
+   * a second submission tears the first timer down and starts a fresh
+   * one. Nothing about the timing or the message changes. */
+  useEffect(() => {
+    if (!success) {
+      return;
+    }
+
+    const timer = setTimeout(() => setSuccess(false), 3000);
+
+    return () => clearTimeout(timer);
+  }, [success]);
 
   const charCount = text.length;
 

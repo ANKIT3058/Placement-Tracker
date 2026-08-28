@@ -23,8 +23,8 @@
  * contract PR-7B established rather than a local imitation of it.
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 import EmailInput from "../EmailInput";
 import { processEmail } from "../../api/emailApi";
@@ -210,5 +210,87 @@ describe("the four failures are not collapsed into one message", () => {
     const offline = await messageFor(new TypeError("Failed to fetch"));
 
     expect(unauthorized).not.toBe(offline);
+  });
+});
+
+/* Phase 6 — the success message's own lifetime.
+ *
+ * It used to be dismissed by a bare `setTimeout` fired from inside the
+ * submit handler, with nothing cancelling it. Two consequences, both
+ * pinned below: a pending write survived the component (this section
+ * unmounts for real when a refresh comes back 401), and two submissions
+ * in quick succession left two timers running, so the first could clear
+ * the second one's message early.
+ *
+ * The message and its three-second lifetime are unchanged — only who
+ * owns the timer. */
+
+describe("the success message clears itself", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(processEmail).mockResolvedValue(SUCCESS_RESPONSE);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stays on screen immediately after a successful submission", async () => {
+    render(<EmailInput refresh={vi.fn()} />);
+    await submit();
+
+    expect(
+      await screen.findByText(/email processed successfully/i),
+    ).toBeInTheDocument();
+  });
+
+  it("disappears once its window has passed", async () => {
+    render(<EmailInput refresh={vi.fn()} />);
+    await submit();
+
+    await screen.findByText(/email processed successfully/i);
+
+    await act(async () => {
+      vi.advanceTimersByTime(3200);
+    });
+
+    expect(screen.queryByText(/email processed successfully/i)).toBeNull();
+  });
+
+  /* The stacked-timer case: the second success must get its own full
+     window rather than inheriting the remains of the first one's. */
+  it("gives a second submission a fresh window", async () => {
+    render(<EmailInput refresh={vi.fn()} />);
+    await submit();
+    await screen.findByText(/email processed successfully/i);
+
+    await act(async () => {
+      vi.advanceTimersByTime(2000);
+    });
+
+    vi.mocked(processEmail).mockClear();
+    await submit("a second email");
+    await screen.findByText(/email processed successfully/i);
+
+    /* The first timer would have fired by now if it were still pending. */
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    expect(
+      screen.getByText(/email processed successfully/i),
+    ).toBeInTheDocument();
+  });
+
+  /* Unmounting mid-window must leave nothing pending. */
+  it("cancels its timer when the section unmounts", async () => {
+    const { unmount } = render(<EmailInput refresh={vi.fn()} />);
+    await submit();
+    await screen.findByText(/email processed successfully/i);
+
+    unmount();
+
+    expect(() => vi.advanceTimersByTime(5000)).not.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

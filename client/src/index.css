@@ -1101,9 +1101,34 @@ code {
   outline-offset: 2px;
 }
 
+/* Unavailable: the fade IS the message, and WCAG exempts inactive
+   controls from contrast, so 0.45 is fine here. */
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* BUSY IS NOT THE SAME AS UNAVAILABLE, and it was being drawn as if it
+   were. These two variants swap their label for "Processing…" /
+   "Saving…" and start a spinner while in flight — and because in-flight
+   also means `disabled`, the fade above was applied to exactly the
+   moment the button has something to say. Measured in the running app:
+   white on 45%-opacity accent over the page was 1.93:1, so the word
+   telling a student what was happening was the least readable thing on
+   screen.
+
+   Keyed on `aria-busy`, which all four action buttons already set, so
+   no component changes and no new state. `:disabled` still supplies
+   `cursor: not-allowed` and still blocks the second click — only the
+   fade is lifted.
+
+   Scoped to the two FILLED variants deliberately. `.btn-secondary`
+   (Log out) keeps its fade: it shows no spinner and keeps its label, so
+   the fade is its only in-flight cue, and removing it would leave the
+   button looking untouched while the session ends. */
+.btn-primary[aria-busy="true"]:disabled,
+.btn-confirm[aria-busy="true"]:disabled {
+  opacity: 1;
 }
 
 /* Primary action of the email form. Scoped overrides only — the .btn
