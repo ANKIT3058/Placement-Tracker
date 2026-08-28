@@ -183,9 +183,54 @@ export const extractCompany = (text: string): string => {
     /\bat\s+(?:the\s+)?(?!(?:https?|www|least|most|all|once|any)\b)([a-z][a-z0-9&.]+(?:\s+[a-z][a-z0-9&.]+){0,3})/,
   );
   if (atMatch?.[1]) {
-    let company = atMatch[1].trim();
-    company = (company.split(/\b(date|time|venue|note|for|on|the)\b/i)[0] ?? "").trim();
-    if (company.length >= 2) return company;
+    const candidate = atMatch[1];
+
+    // The body read from the candidate's first character onward. The capture
+    // group cannot hold a ":" — its character class excludes it — and the colon
+    // is exactly what the clause test below needs. Group 1 ends where the whole
+    // match ends, so it begins that many characters earlier.
+    const phrase = lowerText.slice(
+      (atMatch.index ?? 0) + atMatch[0].length - candidate.length,
+    );
+
+    // Where the name stops. The same words as before, read one level deeper.
+    //
+    // "date", "time", "venue" and "note" are FIELD LABELS when a colon follows:
+    // the body writes them on their own lines and `cleanEmail` flattens those
+    // lines onto the end of the name, so "at Infosys Date: 28th July" really
+    // does name Infosys and the head must be kept.
+    //
+    // The same four words WITHOUT a colon are ordinary prose, and there the head
+    // is not a name but a modifier of the noun — "at stipulated time", "at a
+    // later date", "at the venue". The old split could not tell the two apart:
+    // it removed "time" and returned the adjective, which is how
+    // `stipulated|Interview|2026-08-20` was stored at confidence 1.0 (Event 55).
+    //
+    // "for", "on" and "the" stay plain separators: they FOLLOW a name rather
+    // than being modified by one ("at Acme on 20th Aug").
+    //
+    // NO VOCABULARY IS ADDED HERE. These are the words this split already used;
+    // what is new is that a bare event noun disqualifies the phrase instead of
+    // being trimmed off the end of it.
+    const clause = /\b(date|time|venue|note|for|on|the)\b/.exec(candidate);
+    const boundary = clause?.[1];
+
+    const isProse =
+      boundary !== undefined &&
+      /^(?:date|time|venue|note)$/.test(boundary) &&
+      !/^\s*:/.test(phrase.slice(clause!.index + boundary.length));
+
+    if (!isProse) {
+      const company = (
+        clause ? candidate.slice(0, clause.index) : candidate
+      ).trim();
+
+      // A name cannot BEGIN with a word that could not itself be a name:
+      // "at our office", "at this location". This reuses the rejects
+      // `isValidCompany` already lists rather than starting a second list.
+      if (company.length >= 2 && isValidCompany(company.split(/\s+/)[0] ?? ""))
+        return company;
+    }
   }
 
   // Pattern 2: "drive/test/interview/ppt by [Company]" or "conducted/organized by [Company]"

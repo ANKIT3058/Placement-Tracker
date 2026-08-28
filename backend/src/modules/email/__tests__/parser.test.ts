@@ -127,6 +127,73 @@ describe("the 'at <company>' pattern rejects prose and links", () => {
     expect(extractCompany("Arrive at least 10 minutes early at Acme")).toBe("acme");
   });
 
+  // -------------------------------------------------------------------------
+  // The third member of the same family, and the one the previous fix missed.
+  //
+  // `at stipulated time on 20th aug` produced Event 55, `stipulated|Interview|
+  // 2026-08-20`, at confidence 1.0. Nothing about "stipulated" is special — the
+  // trailing-clause split removed "time" and handed back the adjective that was
+  // modifying it. Any adjective in that position would have done the same, which
+  // is why the fix is the CONTEXT ("a bare event noun means this phrase is
+  // adverbial") and not the word.
+  // -------------------------------------------------------------------------
+
+  test("'at stipulated time' does not become the company", () => {
+    const text = "Interview at stipulated time on 20th Aug";
+
+    expect(extractCompany(text)).not.toBe("stipulated");
+    expect(extractCompany(text)).toBe(UNRESOLVED_COMPANY);
+  });
+
+  test.each([
+    ["at a later date", "Results will be shared at a later date"],
+    ["at the venue", "Please report at the venue on 20th Aug"],
+    ["at our office", "Interview at our office on 20th Aug"],
+    ["at this location", "Assessment at this location on 20th Aug"],
+  ])("prose of the same shape — %s", (_label, text) => {
+    expect(extractCompany(text)).toBe(UNRESOLVED_COMPANY);
+  });
+
+  // The other side of the colon rule, and the reason the fix cannot simply
+  // reject those four words. `cleanEmail` flattens a body's own lines onto one,
+  // so a labelled field lands directly after the company name. Here the head IS
+  // the company and must survive.
+  test.each([
+    ["Date", "Interview at Infosys Date: 28th July 2026"],
+    ["Time", "Interview at Infosys Time: 9:00 AM"],
+    ["Venue", "Interview at Infosys Venue: Seminar Hall"],
+    ["Note", "Interview at Infosys Note: bring your ID card"],
+  ])("a labelled %s: field after the name still leaves the name", (_l, text) => {
+    expect(extractCompany(text)).toBe("infosys");
+  });
+
+  // The fix must not amount to switching "at" extraction off.
+  test("a realistic single-word company is still extracted", () => {
+    expect(extractCompany("Assessment at Acme on 28th August")).toBe("acme");
+  });
+
+  test("a realistic multi-word company is still extracted", () => {
+    expect(extractCompany("Assessment at Hindustan Unilever on 28th August")).toBe(
+      "hindustan unilever",
+    );
+  });
+
+  // Through `extractData`, the function the pipeline actually calls, so the
+  // result is the one that would have reached an `eventKey`.
+  test.each([
+    ["at stipulated time", "Interview at stipulated time on 20th Aug 2026"],
+    ["at least", "Join at least 15 minutes before the OA on 20th Aug 2026"],
+    ["at https", "OA on 20th Aug 2026. Register at https://track.example.com/a"],
+  ])("extractData resolves no company for %s", (_label, body) => {
+    expect(extractData(body).company).toBe(UNRESOLVED_COMPANY);
+  });
+
+  test("extractData still resolves a real company after 'at'", () => {
+    expect(extractData("Assessment at Acme on 28th August 2026").company).toBe(
+      "acme",
+    );
+  });
+
   test("isValidCompany rejects a scheme fragment arriving from anywhere", () => {
     // Defence in depth: the pattern can no longer produce these, but the
     // predicate refuses them whatever route they take.

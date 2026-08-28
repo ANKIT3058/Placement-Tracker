@@ -96,6 +96,12 @@ const NO_COMPANY_EMAIL =
 const URL_COMPANY_EMAIL =
   "online test on 16th august 2027. for any queries please refer to the portal at https://track.example.com/abc";
 
+// The shape that produced Event 55: the only "at <token>" in the body is an
+// adverbial phrase, so the pattern layer captured the adjective modifying
+// "time" as the company.
+const PROSE_COMPANY_EMAIL =
+  "interview at stipulated time on 16th august 2027.";
+
 // A complete AI reply, in the shape the prompt asks for.
 const aiReply = (overrides: Record<string, unknown> = {}) => ({
   company: "infosys limited",
@@ -482,6 +488,27 @@ describe("company identity belongs to the deterministic extractor", () => {
     structuredCompletion.mockResolvedValue(aiReply({ company: "https" }));
 
     const result = await extract(URL_COMPANY_EMAIL);
+
+    expect(result.data.company).toBe("unknown");
+  });
+
+  // The same precedence rule against the OTHER prose shape. "https" was caught
+  // by `isValidCompany`; "stipulated" is a perfectly ordinary word and never
+  // could be, so the pattern layer had to stop producing it. Asserted here as
+  // well as in the parser because this is the path that reaches an `eventKey`.
+  test("adverbial prose from the patterns does not beat a valid AI company", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: "Acme" }));
+
+    const result = await extract(PROSE_COMPANY_EMAIL);
+
+    expect(result.data.company).not.toBe("stipulated");
+    expect(result.data.company).toBe("acme");
+  });
+
+  test("adverbial prose alone yields the placeholder", async () => {
+    structuredCompletion.mockResolvedValue(aiReply({ company: null }));
+
+    const result = await extract(PROSE_COMPANY_EMAIL);
 
     expect(result.data.company).toBe("unknown");
   });
