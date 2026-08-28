@@ -229,9 +229,17 @@ export default function Dashboard() {
     <div className="dashboard">
       <div className="dashboard-container">
         <header className="dashboard-header">
-          <h1>Track placement opportunities from your college emails</h1>
+          {/* The product's name, not its pitch.
+              "Track placement opportunities from your college emails" is
+              a sentence written for someone deciding whether to sign up;
+              everyone who reads it here has already signed in. At 32px
+              across two lines it was also the loudest thing on the page
+              and pushed the first event card most of a screen down. The
+              subtitle keeps the one piece of context that still earns
+              its place — what this page is showing you. */}
+          <h1>Placement Tracker</h1>
           <p className="dashboard-subtitle">
-            AI-powered placement event extraction and tracking
+            Your placement opportunities at a glance
           </p>
 
           {/* Offered only once there is a session to end: hidden while the
@@ -425,11 +433,22 @@ export default function Dashboard() {
                   </span>
                 </div>
                 {reviewEvents.length === 0 ? (
+                  /* One line, because the empty case is the normal case.
+                     A dashed panel with a ringed icon and a sentence
+                     explaining the queue was spending an event card's
+                     worth of height to report that there is no work —
+                     and it said it directly under a heading that already
+                     reads "Needs Review · 0".
+
+                     The section still gains its full weight the moment
+                     there IS work: the branch below is untouched, and a
+                     real ReviewCard carries its reason, its fields, its
+                     confidence and Confirm & Save exactly as before. */
                   <EmptyState
                     icon="check"
                     tone="positive"
-                    title="Nothing needs review"
-                    description="Events the AI wasn't confident about land here so you can correct and confirm them."
+                    compact
+                    title="Nothing needs your attention"
                   />
                 ) : (
                   <div className="cards-grid">
@@ -516,29 +535,58 @@ export default function Dashboard() {
               succeed. Only the authentication-required state hides it — a 500
               says nothing about who the user is, and during loading nothing is
               known yet. */}
+          {/* ONE BAND, NOT THREE STRAY SECTIONS. The three below were
+              already visually secondary after Phase 3, but they still
+              arrived as three unrelated blocks at the bottom of the
+              page. A single quiet "Tools" label and one wrapper say what
+              they have in common — they are things you use, not things
+              you read — so a student scrolling past them can stop
+              reading once.
+
+              PRESENTATION ONLY. The components, their props, their
+              authentication guards and their order are exactly as they
+              were; this adds a <section> and a heading around them and
+              nothing else. Each still hides itself independently on its
+              own failure, so the band shrinks to whatever is available.
+
+              The guard is repeated per child rather than hoisted onto
+              the wrapper on purpose: `EmailInput` is gated on the
+              Dashboard's auth state, while the other two ALSO hide
+              themselves when their own fetch fails. Hoisting would look
+              tidier and would quietly change when the label appears. */}
           {!isAuthenticationRequired(error) && (
-            <EmailInput refresh={fetchData} />
+            <section className="tools" aria-labelledby="tools-title">
+              {/* A LABEL, NOT A HEADING, and deliberately so.
+                  The three blocks inside each own an <h2> — they are
+                  separate components and this phase does not touch them
+                  — so an <h2> here would be a heading containing three
+                  headings of its own level, which is a worse document
+                  outline than the one it replaced. `aria-labelledby` on
+                  the <section> gives the same result the heading was
+                  wanted for: a named region a screen reader can jump to
+                  and skip, with the outline left alone. */}
+              <p className="tools__title" id="tools-title">
+                Tools
+              </p>
+
+              <EmailInput refresh={fetchData} />
+
+              {/* Optional campus information, and deliberately just another
+                  section: it gates nothing, and a student who never sets a
+                  registration number sees an application that behaves
+                  identically. It hides itself when its own load fails, so a
+                  500 here adds no second error banner to a page that already
+                  reports what went wrong. */}
+              <StudentProfileSection />
+
+              {/* Reads the profile section's field indirectly: the server
+                  decides whether there is a registration number to check
+                  with, and this section explains all four outcomes rather
+                  than showing an empty list for two different reasons. It
+                  hides itself when its own load fails. */}
+              <ShortlistSection />
+            </section>
           )}
-
-          {/* Optional campus information, and deliberately just another
-              section: it gates nothing, and a student who never sets a
-              registration number sees an application that behaves identically.
-
-              Hidden in the authentication-required state for the same reason
-              the form above is — the endpoints behind it are authenticated, so
-              offering the control advertises an action that cannot succeed.
-              The section also hides itself when its own load fails, so a 500
-              here adds no second error banner to a page that already reports
-              what went wrong. */}
-          {!isAuthenticationRequired(error) && <StudentProfileSection />}
-
-          {/* Reads the profile section's field indirectly: the server decides
-              whether there is a registration number to check with, and this
-              section explains all four outcomes rather than showing an empty
-              list for two different reasons. Hidden in the same
-              authentication-required state, and it hides itself when its own
-              load fails. */}
-          {!isAuthenticationRequired(error) && <ShortlistSection />}
         </main>
       </div>
 

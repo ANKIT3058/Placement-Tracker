@@ -423,8 +423,12 @@ describe("empty sections", () => {
     expect(
       within(upcomingSection()).getByText("No events yet"),
     ).toBeInTheDocument();
+    /* The review section's empty state is now a single compact line
+       rather than a panel, and its wording changed with it. What this
+       assertion is for — that BOTH sections still say something on a
+       first-run account rather than rendering nothing — is unchanged. */
     expect(
-      within(reviewSection()).getByText("Nothing needs review"),
+      within(reviewSection()).getByText("Nothing needs your attention"),
     ).toBeInTheDocument();
   });
 });

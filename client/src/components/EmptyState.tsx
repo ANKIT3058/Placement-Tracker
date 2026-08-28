@@ -39,12 +39,26 @@ export default function EmptyState({
   title,
   description,
   tone = "default",
+  compact = false,
   action,
 }: {
   icon: keyof typeof ICONS;
   title: string;
   description?: string;
   tone?: "default" | "positive";
+  /* One quiet line instead of a panel, for a section whose emptiness is
+     the expected state rather than a gap to fill.
+
+     "Nothing needs review" is good news, and it was being delivered in a
+     dashed box roughly the height of an event card: a 44px ringed icon,
+     a heading, and a sentence explaining a queue that is empty. The
+     compact form keeps the icon and the title inline and drops the
+     panel; the caller simply stops passing a description.
+
+     A VARIANT RATHER THAN A SECOND COMPONENT, because everything else —
+     the icon set, the tone tokens, the title — is identical, and the
+     four other call sites keep the panel by doing nothing. */
+  compact?: boolean;
   /* Optional call to action rendered under the description — the
      signed-out state needs a sign-in link, and every other caller keeps
      working unchanged because it is optional. */
@@ -52,7 +66,13 @@ export default function EmptyState({
 }) {
   return (
     <div
-      className={`empty-state ${tone === "positive" ? "empty-state--positive" : ""}`}
+      className={[
+        "empty-state",
+        compact ? "empty-state--compact" : "",
+        tone === "positive" ? "empty-state--positive" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <span className="empty-state__icon" aria-hidden="true">
         {ICONS[icon]}

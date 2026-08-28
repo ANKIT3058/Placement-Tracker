@@ -9,45 +9,13 @@ import {
 
 import type { Event } from "../types/event";
 
-/* Inline icons — no icon dependency, and they inherit `currentColor`
-   so they follow the light/dark theme automatically. */
-const iconProps = {
-  className: "event-detail__icon",
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: 2,
-  strokeLinecap: "round" as const,
-  strokeLinejoin: "round" as const,
-  "aria-hidden": true,
-};
-
-function CalendarIcon() {
-  return (
-    <svg {...iconProps}>
-      <rect x="3" y="5" width="18" height="16" rx="2" />
-      <path d="M3 10h18M8 3v4M16 3v4" />
-    </svg>
-  );
-}
-
-function ClockIcon() {
-  return (
-    <svg {...iconProps} className="event-detail__icon event-detail__icon--sm">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
-    </svg>
-  );
-}
-
-function VenueIcon() {
-  return (
-    <svg {...iconProps}>
-      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 1 1 16 0z" />
-      <circle cx="12" cy="10" r="3" />
-    </svg>
-  );
-}
+/* NO ICONS ON THIS CARD, deliberately.
+   A calendar glyph beside a date, a clock beside a time and a pin
+   beside a venue each restate what the value already says, and three of
+   them turned two short lines into a column of decorated rows. Removing
+   them lets the date itself be the strongest thing under the company
+   name — which is what a student scans a list of drives for. The drawer
+   still labels every field explicitly for anything ambiguous. */
 
 export default function EventCard({
   event,
@@ -108,43 +76,42 @@ export default function EventCard({
       </header>
 
       <div className="event-card__body">
-        <p className="event-detail">
-          <CalendarIcon />
-          <span className="event-detail__content">
-            <span className="event-detail__primary">{date}</span>
-            {/* Unchanged behaviour: the compact card omits the row when no
-                time is known rather than spending a line on "Not specified".
-                The drawer states it explicitly. */}
-            {hasTime && (
-              <span className="event-detail__secondary">
-                <ClockIcon />
-                {time}
+        {/* WHEN, as one phrase. Date and time were two stacked rows with
+            an icon each, which split a single fact — "Sep 4, 10:00 AM" —
+            across two lines and two glyphs. Read together they are one
+            scannable line and the card's real anchor.
+
+            The behaviour either side of it is unchanged: an unknown time
+            still omits the separator and the value entirely rather than
+            spending words on "Not specified" (the drawer states that
+            explicitly), and an inferred time still arrives from
+            `formatDateTime` carrying its own "(estimated)". */}
+        <p className="event-when">
+          <span className="event-when__date">{date}</span>
+          {hasTime && (
+            <>
+              <span className="event-when__separator" aria-hidden="true">
+                ·
               </span>
-            )}
-          </span>
+              <span className="event-when__time">{time}</span>
+            </>
+          )}
         </p>
 
-        <p className="event-detail">
-          <VenueIcon />
-          <span className="event-detail__content">
-            {event.venue ? (
-              /* One weight below the date above it. Both rows were 600,
-                 which made "where" compete with "when" — and when is
-                 the thing a student scans a card for. Same size, same
-                 colour, so the venue stays fully readable. */
-              <span className="event-detail__primary event-detail__primary--venue">
-                {event.venue}
-              </span>
-            ) : (
-              <span className="event-detail__placeholder">To be announced</span>
-            )}
-          </span>
+        {/* WHERE, one step quieter than when. */}
+        <p className="event-where">
+          {event.venue ? (
+            event.venue
+          ) : (
+            <span className="event-where__placeholder">To be announced</span>
+          )}
         </p>
       </div>
 
-      {/* The footer is now the status alone. It keeps its rule and its
-          `margin-top: auto` so footers still line up across a grid row
-          whether or not the cards above them are the same height. */}
+      {/* Status alone, and no longer behind a rule: one small chip did
+          not need a horizontal border to announce it. `margin-top: auto`
+          still pins it, so footers line up across a grid row whatever
+          the cards above them are doing. */}
       <footer className="event-card__footer">
         <span className={`event-status ${statusClass}`}>
           <span className="event-status__dot" aria-hidden="true" />

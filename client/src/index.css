@@ -234,17 +234,20 @@ code {
   border-bottom: 1px solid var(--border);
 }
 
+/* A product name, sized like one. The old clamp topped out at 32px for
+   a sentence that wrapped to two lines; a two-word title needs far less
+   and the page reaches Upcoming Events sooner for it. */
 .dashboard-header h1 {
-  font-size: clamp(24px, 2.2vw + 12px, 32px);
-  line-height: 1.15;
-  letter-spacing: -0.8px;
+  font-size: clamp(20px, 1vw + 16px, 24px);
+  line-height: 1.2;
+  letter-spacing: -0.4px;
   font-weight: 700;
   color: var(--text-h);
-  margin: 0 0 var(--space-2);
+  margin: 0 0 var(--space-1);
 }
 
 .dashboard-subtitle {
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.5;
   color: var(--text);
   margin: 0;
@@ -287,21 +290,28 @@ code {
   color: var(--text-h);
 }
 
+/* NEUTRAL, NOT PURPLE. A count is information; it is neither an action
+   nor a selection, which are the two things purple is reserved for. A
+   purple-outlined pill beside every section heading was the single
+   biggest source of accent on the page, and it made "5 upcoming events"
+   look like something to click. The border goes with it — a filled chip
+   at this size does not need an outline as well. */
 .section-count {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   padding: 2px 8px;
   border-radius: 99px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  border: 1px solid var(--accent-border);
+  background: var(--code-bg);
+  color: var(--text);
   line-height: 1.6;
 }
 
+/* The one count that IS semantic: work waiting on a person. Amber
+   survives the neutral default above precisely because it means
+   something, and Dashboard only applies it when the count is non-zero. */
 .section-count-review {
   background: var(--amber-bg);
   color: var(--amber);
-  border-color: var(--amber-border);
 }
 
 /* min(100%, 280px) lets the track collapse to a single column below
@@ -471,33 +481,43 @@ code {
   gap: var(--space-2);
 }
 
+/* FIVE OUTLINED PILLS BECAME ONE. Every chip carried its own 1px
+   border, so the row above the cards read as five controls competing
+   with the events below it — and the selected one had to shout over
+   four others drawn exactly as loudly. Only the selection is filled
+   now; the rest are quiet text targets that fill in on hover.
+
+   The TAP TARGET IS UNCHANGED: same padding, same 43px height at mobile.
+   Nothing shrank — the border was removed, not the button. */
 .filter-chip {
   font: inherit;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   padding: 7px 14px;
   border-radius: 99px;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
   transition:
     background-color var(--t-fast) var(--ease),
-    border-color var(--t-fast) var(--ease),
     color var(--t-fast) var(--ease);
 }
 
 /* Hover only hints; the active state below is what reads as selected. */
 .filter-chip:hover:not(.is-active) {
-  border-color: var(--accent-border);
+  background: var(--code-bg);
   color: var(--text-h);
 }
 
+/* Purple earns its place here: this is a selection, which is one of the
+   two things the accent is reserved for. Weight rises with it, so the
+   selected filter is legible without relying on colour alone. */
 .filter-chip.is-active {
   background: var(--accent-bg);
-  border-color: var(--accent-border);
   color: var(--accent);
+  font-weight: 600;
 }
 
 @media (max-width: 640px) {
@@ -625,12 +645,16 @@ code {
   letter-spacing: 0.7px;
   line-height: 1.6;
   padding: 3px 8px;
-  /* Squared-off, unlike the pills in the footer: reads as a label. */
+  /* Squared-off, unlike the status pill below: reads as a label. */
   border-radius: 6px;
   white-space: nowrap;
   background: var(--tone-bg);
   color: var(--tone);
-  border: 1px solid var(--tone-border);
+  /* NO BORDER. The tint and the tone-coloured text already separate it
+     from the company name beside it, and it sits 8px inside a bordered
+     card — a second outline there is the nested-rounded-container
+     problem in miniature. `--tone-border` is still used by the status
+     chip and the review card, so nothing is orphaned. */
 }
 
 .badge-oa {
@@ -657,79 +681,60 @@ code {
   --tone-border: var(--border);
 }
 
-/* ── Event card: body details ─────────────────────────── */
+/* ── Event card: when & where ─────────────────────────────
+   Two lines of plain text, and that is the whole point. This block used
+   to be `.event-detail*`: two icon+text rows, the second of which
+   stacked a secondary line under the first, so a card carried three
+   glyphs and four text nodes to say a date, a time and a place. The
+   information now carries its own hierarchy — size and weight separate
+   when from where, with nothing drawn around either. */
 
 .event-card__body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-1);
 }
 
-.event-detail {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
+/* WHEN. The card's anchor after the company: the largest thing in the
+   body, and the one line a student is scanning for. */
+.event-when {
   margin: 0;
-}
-
-.event-detail__icon {
-  flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  /* Centres the icon against the first line of text. */
-  margin-top: 2px;
-  color: var(--text);
-  opacity: 0.7;
-}
-
-.event-detail__icon--sm {
-  width: 12px;
-  height: 12px;
-  margin-top: 0;
-}
-
-.event-detail__content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.event-detail__primary {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.45;
   color: var(--text-h);
   overflow-wrap: anywhere;
 }
 
-/* Venue, one weight below the date. Both rows sat at 600, so "where"
-   read as loudly as "when" — and a student scanning a list of drives is
-   looking for when. Weight only: same size and same --text-h colour, so
-   nothing about readability or contrast changes. `overflow-wrap:
-   anywhere` is inherited from the base rule, which is what keeps a long
-   venue string from pushing the card wider at 390px. */
-.event-detail__primary--venue {
+/* The time rides the same line at the same size, one weight down, so
+   "Sep 4, 2026 · 10:00 AM" reads as one phrase rather than two facts. */
+.event-when__time {
   font-weight: 500;
-}
-
-.event-detail__secondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.4;
   color: var(--text);
 }
 
-/* Missing data reads as absent, not as a real value — italics carry that
-   on their own, so no opacity fade to drag it under 4.5:1. */
-.event-detail__placeholder {
+.event-when__separator {
+  margin: 0 4px;
+  color: var(--text);
+  /* The date and time are already separate elements to a screen reader;
+     the dot is punctuation for the eye only. */
+}
+
+/* WHERE. Secondary but fully readable: --text is the same colour the
+   subtitle and hints use, and it holds 4.5:1 in both themes. */
+.event-where {
+  margin: 0;
   font-size: 13px;
-  font-style: italic;
-  line-height: 1.4;
+  font-weight: 500;
+  line-height: 1.45;
   color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* Missing data reads as absent, not as a real value — italics carry
+   that on their own, so no opacity fade to drag it under 4.5:1. */
+.event-where__placeholder {
+  font-style: italic;
 }
 
 /* ── Event card: footer ───────────────────────────────── */
@@ -742,8 +747,10 @@ code {
   gap: var(--space-2);
   /* Pins the footer to the bottom so footers line up across a grid row. */
   margin-top: auto;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border);
+  /* Space, not a rule. The border-top divided a card into regions back
+     when the footer held a confidence meter AND a status; with one chip
+     left it was drawing a line under two short lines of text. */
+  padding-top: var(--space-2);
 }
 
 /* ── Confidence tones ─────────────────────────────────────
@@ -824,18 +831,13 @@ code {
 }
 
 /* ── Event card: responsive ───────────────────────────── */
-/* The grid already reflows to one column, so only type sizing, footer
-   wrapping and the card's internal rhythm need attention at the small
-   end.
+/* The grid already reflows to one column, so only type sizing and the
+   card's internal rhythm need attention at the small end.
 
-   COMPACTION IS SPACING ONLY. Every row the card renders on a desktop
-   still renders here — company, stage badge, date, time when known,
-   venue, confidence, status — and the card as a whole is still the tap
-   target, so nothing shrinks that a thumb has to hit. One step down the
-   spacing scale at each of the four seams (shell padding, the gaps
-   between header/body/footer, the gap between the two detail rows, and
-   the footer's rule) takes roughly 25px off a ~195px card without
-   moving a single element. */
+   COMPACTION IS SPACING ONLY. Every value the card renders on a desktop
+   still renders here — company, stage, date, time when known, venue,
+   status — and the card as a whole is still the tap target, so nothing
+   shrinks that a thumb has to hit. */
 
 @media (max-width: 640px) {
   .event-card {
@@ -849,12 +851,9 @@ code {
     font-size: 16px;
   }
 
-  .event-card__body {
-    gap: var(--space-2);
-  }
-
+  /* The footer's own padding-top now matches the base rule, so only the
+     wrap gap is worth stating here. */
   .event-card__footer {
-    padding-top: var(--space-2);
     row-gap: var(--space-2);
   }
 }
@@ -1242,15 +1241,76 @@ code {
 
 /* ── Email input: shell & header ──────────────────────── */
 
-.email-section {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: var(--space-5);
-  /* Spacing below is owned by .dashboard-main's gap. */
+/* ── Tools band ───────────────────────────────────────────
+   Process Placement Email, Student Profile and Shortlists, under one
+   label. They were already secondary after Phase 3, but they still
+   arrived as three unrelated blocks: three cards, three headings, no
+   statement that they belong together. One rule and one quiet label say
+   it, and the three then only have to be legible rather than
+   self-introducing.
+
+   The band owns its own internal rhythm, which is tighter than
+   `--section-gap`: these are three parts of one thing now, not three
+   more sections. */
+
+.tools {
+  min-width: 0;
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
+}
+
+/* One rank below a section heading, and quieter than the h2s inside it
+   used to be. It labels a band; it is not competing for a read. */
+.tools__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+/* ── Utility section shell ────────────────────────────────
+   THE CARD SHELL IS GONE AT EVERY WIDTH. Phase 3 removed it on mobile
+   because three white bordered boxes below the events read as the page
+   rather than as its tools; the same was true on desktop, where they
+   were pixel for pixel the same object as an event card. Inside a
+   labelled band they need no shell of their own — the hairline between
+   them is enough separation, and it removes three nested rounded
+   containers from the widest layout.
+
+   `background`/`border`/`radius` are simply not declared, rather than
+   reset: nothing sets them any more. */
+
+.email-section {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The first block sits directly under the "Tools" label, which is
+   already preceded by the band's own rule — a second hairline 8px below
+   the first is a double line, not a separator. */
+.tools > .email-section:first-of-type {
+  padding-top: 0;
+  border-top: none;
+}
+
+/* MEASURE, not layout. With the card shell gone these two are the only
+   utility elements that stretch, and at 1120px a paste box and a
+   one-line "Attachment #17" row both ran the full width of the page for
+   no reason. `ch` is the unit `.email-hint` (60ch) and
+   `.empty-state__description` (44ch) already cap themselves with; the
+   hairline above each section still spans the full band, so the rhythm
+   of the band is unchanged. */
+.email-textarea,
+.shortlist-list {
+  max-width: 78ch;
 }
 
 .email-section__header {
@@ -1259,10 +1319,13 @@ code {
   gap: var(--space-1);
 }
 
+/* 16px/700 made a utility heading HEAVIER than "Upcoming Events"
+   (18px/600). Weight is what read loudest, so the tools were shouting
+   over the section they sit under. */
 .email-section h2 {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 600;
   line-height: 1.3;
   letter-spacing: -0.2px;
   color: var(--text-h);
@@ -1285,8 +1348,13 @@ code {
   padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--code-bg);
+  /* NEUTRAL, like every other input. The warm beige `--code-bg` made
+     these two fields the only ones on the page not sharing the surface
+     that `.field-input` and `.section-search__input` already use, so a
+     form looked like two different form systems. */
+  background: var(--bg);
   color: var(--text-h);
+
   /* Vertical-only: horizontal resize would break the card's width. */
   resize: vertical;
   min-height: 140px;
@@ -1303,6 +1371,24 @@ code {
 /* Full-strength --text (~4.6:1 here). It stays distinct from typed text,
    which is --text-h; the old 0.6 opacity blended it to ~2.6:1. The
    explicit opacity resets Firefox's default placeholder fade. */
+/* A SINGLE-LINE <input> WEARING THE TEXTAREA'S SHELL.
+   StudentProfileSection reuses `.email-textarea` for the registration
+   number so the two forms look alike — and inherits the multi-line
+   `min-height` with it, which drew a 140px empty box around one short
+   value. Phase 4 fixed this at mobile widths only; it was always wrong
+   at every width, and removing the card shell around it left nothing to
+   disguise that on desktop.
+
+   Class-and-element selector rather than an id, so any future
+   single-line field in this shell is covered too. Both properties are
+   needed: `height: auto` lets the input size to its own line, and
+   `min-height: 0` stops the floor putting the height back. */
+input.email-textarea {
+  height: auto;
+  min-height: 0;
+  padding: var(--space-2) var(--space-3);
+}
+
 .email-textarea::placeholder {
   color: var(--text);
   opacity: 1;
@@ -1378,42 +1464,17 @@ code {
 }
 
 /* ── Email input: responsive ──────────────────────────────
-   `.email-section` is the shell all three UTILITY blocks wear — Process
-   Placement Email, Student Profile and Shortlists. On a phone it was
-   also, pixel for pixel, the same object as an event card: white
-   surface, 1px border, 12px radius, a bold heading. Three of them
-   stacked below the events read as the page rather than as its tools,
-   and they were spending a third of the document's height saying so.
-
-   SO THE CARD SHELL COMES OFF, and nothing else does. Every control,
-   every hint, every message and every handler is untouched — this is a
-   change of surface, not of content. Divided by a hairline and set
-   flush to the page gutter, the three tools read as a band of utilities
-   under the events instead of three more cards competing with them.
-   Cards above are things you look at; rules below are things you use.
-
-   Desktop and tablet keep the card exactly as Phase 2 left it. */
+   The card shell that used to come off only at 640px now comes off at
+   every width (see the utility section shell above), so this block no
+   longer has to undo it — the surface, the heading weight and the
+   hairline are the same everywhere. What remains here is genuinely
+   size-specific: the type sizes iOS needs, and the two height rules
+   that keep an empty paste box from owning a fifth of the viewport. */
 
 @media (max-width: 640px) {
-  .email-section {
-    /* Flush to the gutter: the shell's own inset is what made these
-       read as cards, and dropping it also gives the textarea and the
-       shortlist rows the full measure. */
-    padding: var(--space-4) 0 0;
-    background: none;
-    border: none;
-    border-top: 1px solid var(--border);
-    border-radius: 0;
-    gap: var(--space-3);
-  }
-
-  /* One rank below .section-header h2, the way .past-events__title
-     already sits one rank below an open section. Still an h2, still in
-     the outline, still the section's accessible name — only its weight
-     on the screen changes. */
-  .email-section h2 {
-    font-size: 15px;
-    font-weight: 600;
+  .tools {
+    padding-top: var(--space-4);
+    gap: var(--space-4);
   }
 
   .email-hint {
@@ -1433,23 +1494,6 @@ code {
        readable as it ever was. */
     min-height: 120px;
     height: 120px;
-  }
-
-  /* A SINGLE-LINE <input> WEARING THE TEXTAREA'S SHELL.
-     StudentProfileSection reuses .email-textarea for the registration
-     number so the two forms look alike — and inherited the 120px floor
-     with it, spending an eighth of the viewport on a box holding one
-     short value. The floor is a textarea's business; an input sizes to
-     its own line. Class-and-element selector rather than an id, so any
-     future single-line field in this shell is covered too. */
-  input.email-textarea {
-    /* Both are needed, and for the same reason: the rule above sets a
-       height AND a floor for the multi-line case, and an input must
-       opt out of each. `height: auto` lets it size to its own single
-       line; `min-height: 0` stops the floor putting the 120px back. */
-    height: auto;
-    min-height: 0;
-    padding: var(--space-2) var(--space-3);
   }
 
   /* The action sits INLINE, beside Clear and beside the counter.
@@ -1871,9 +1915,13 @@ code {
    colour it is, never how that colour is painted. */
 
 .empty-state {
-  --tone: var(--accent);
-  --tone-bg: var(--accent-bg);
-  --tone-border: var(--accent-border);
+  /* Neutral by default. An empty section is not an action to take, and
+     a purple ring around its icon read as one. The `--positive` variant
+     below still goes green, because "nothing needs review" is genuinely
+     good news rather than a blank. */
+  --tone: var(--text);
+  --tone-bg: var(--code-bg);
+  --tone-border: var(--border);
 
   display: flex;
   flex-direction: column;
@@ -1883,6 +1931,43 @@ code {
   text-align: center;
   border: 1px dashed var(--border);
   border-radius: 12px;
+}
+
+/* The compact form: one row, no panel. Everything the panel drew around
+   the message — the dashed border, the centring, the ringed icon — is
+   what made four words of good news occupy a card's worth of height. */
+.empty-state--compact {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+}
+
+/* The icon shrinks to a glyph and loses its ring and fill; the tone
+   survives as the glyph's own colour, so the state is still legible at
+   a glance and still not carried by colour alone (the words say it). */
+.empty-state--compact .empty-state__icon {
+  width: auto;
+  height: auto;
+  margin-bottom: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+.empty-state--compact .empty-state__icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.empty-state--compact .empty-state__title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
 }
 
 /* For sections whose emptiness is good news, not a gap to fill. */

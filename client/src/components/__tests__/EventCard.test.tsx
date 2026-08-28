@@ -247,3 +247,68 @@ describe("opening the details view", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });
+
+/* ------------------------------------------------------------------ *
+ * Phase 5: when and where, as text rather than as components.
+ * ------------------------------------------------------------------ */
+
+describe("date and time read as one piece of information", () => {
+  /* They used to be two stacked rows with an icon each. The values are
+     identical; what changed is that they now sit in one line, which is
+     what makes a list of drives scannable. Asserted through the DOM
+     relationship rather than a class name or a pixel. */
+  it("puts the date and the time in the same line", () => {
+    renderCard({ time: "10:00" });
+
+    const line = screen.getByText("Sep 4, 2026").closest("p");
+
+    expect(line).not.toBeNull();
+    expect(line!.textContent).toContain("Sep 4, 2026");
+    expect(line!.textContent).toContain("10:00 AM");
+  });
+
+  it("keeps the estimated marker on that same line", () => {
+    renderCard({ time: "14:30", isTimeEstimated: true });
+
+    const line = screen.getByText("Sep 4, 2026").closest("p");
+
+    expect(line!.textContent).toContain("2:30 PM (estimated)");
+  });
+
+  /* The separator is decorative: with no time there is nothing to
+     separate, and it must not be left stranded after the date. */
+  it("leaves no dangling separator when there is no time", () => {
+    renderCard({ time: null });
+
+    const line = screen.getByText("Sep 4, 2026").closest("p");
+
+    expect(line!.textContent).toBe("Sep 4, 2026");
+  });
+
+  /* Venue keeps its own line, below and quieter — never merged into the
+     date line, which would bury when under where. */
+  it("keeps the venue on its own line", () => {
+    renderCard({ venue: "Main Auditorium", time: "10:00" });
+
+    const whenLine = screen.getByText("Sep 4, 2026").closest("p");
+    const whereLine = screen.getByText("Main Auditorium").closest("p");
+
+    expect(whereLine).not.toBe(whenLine);
+    expect(whenLine!.textContent).not.toContain("Main Auditorium");
+  });
+});
+
+/* The decorative glyphs are gone; the values they sat beside are not. */
+describe("the card carries no decorative icons", () => {
+  it("renders no svg in the card body", () => {
+    const { container } = render(
+      <EventCard event={makeEvent()} onSelect={vi.fn()} />,
+    );
+
+    /* The status dot is a <span>, not an svg, so a clean card has none
+       at all. Every value the icons labelled is still rendered. */
+    expect(container.querySelectorAll("svg")).toHaveLength(0);
+    expect(screen.getByText("Sep 4, 2026")).toBeInTheDocument();
+    expect(screen.getByText("Online — HackerRank")).toBeInTheDocument();
+  });
+});
