@@ -111,7 +111,18 @@ const canonicalStage = (stage: unknown): string | null => {
 // on a number would fail the whole job and burn a BullMQ retry. The placeholder
 // is also the honest answer — a number is not a company, and the viability gate
 // already knows what to do with one.
-const canonicalCompany = (company: unknown): string =>
+// EXPORTED so the one-off Event-identity cleanup (scripts/cleanup) can reuse it
+// rather than carry a second copy. A duplicated definition of "the canonical
+// form of a company" is exactly the drift that let "https" reach an `eventKey`
+// — `isResolvedCompany` and `isValidCompany` disagreed for months because each
+// had its own idea of what a company is. The cleanup rewrites `company` and
+// `eventKey` on production rows, so it MUST canonicalise identically to the
+// extractor that will later have to match those rows.
+//
+// The export widens this module's surface by one pure, side-effect-free
+// function and changes no behaviour: `mergeExtraction` still calls it exactly
+// as before, and no application code is added or reachable through it.
+export const canonicalCompany = (company: unknown): string =>
   typeof company === "string"
     ? company.trim().replace(/\s+/g, " ").replace(/\.$/, "").toLowerCase()
     : UNRESOLVED_COMPANY;

@@ -20,3 +20,9 @@ prisma.config.d.ts.map
 # Database dumps written by the migration verification framework
 # (scripts/migration). These contain real data and must never be committed.
 /backups
+
+# Reports written by the one-off Event identity cleanup
+# (scripts/cleanup). These carry real Event identity data and Event 54's
+# exported change history, which exists nowhere else once that row is deleted.
+# Keep them; never commit them.
+/scripts/cleanup/artifacts

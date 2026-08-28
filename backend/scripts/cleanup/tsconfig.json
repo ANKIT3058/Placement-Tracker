@@ -1,0 +1,17 @@
+{
+  // Typechecks the one-off cleanup tooling without pulling it into the
+  // application build. The root tsconfig includes only src/ and generated/, so
+  // `npm run build` emits nothing from here — this script is run through tsx,
+  // the same arrangement scripts/migration and scripts/recovery use.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts"],
+
+  // Tests are excluded for the same reason the root tsconfig excludes
+  // src/**/__tests__: they use Jest globals that are not in `types`, and
+  // ts-jest already typechecks them at run time with its own tsconfig overrides.
+  "exclude": ["./**/__tests__/**"]
+}

@@ -16,6 +16,8 @@
     "migration:typecheck": "tsc -p scripts/migration/tsconfig.json",
     "recovery:retry-attachments": "tsx scripts/recovery/retry-failed-attachments.ts",
     "recovery:typecheck": "tsc -p scripts/recovery/tsconfig.json",
+    "cleanup:event-identity": "tsx scripts/cleanup/cleanup-event-identity.ts",
+    "cleanup:typecheck": "tsc -p scripts/cleanup/tsconfig.json",
     "test": "jest",
     "test:redis": "tsx src/infrastructure/redis/test.ts"
   },
