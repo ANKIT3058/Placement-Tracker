@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 
 import Dashboard from "../Dashboard";
 import { getEvents } from "../../api/eventApi";
@@ -88,8 +88,55 @@ const sectionFor = (name: RegExp): HTMLElement => {
 };
 
 const upcomingSection = () => sectionFor(/upcoming events/i);
-const expiredSection = () => sectionFor(/expired events/i);
 const reviewSection = () => sectionFor(/needs review/i);
+
+/* The expired section is now a collapsed <details> labelled "Past
+   Events", and its cards are NOT rendered while it is shut — so every
+   assertion about what is inside it has to open it first.
+
+   The assertions themselves are unchanged. This helper is the one step
+   the new hierarchy adds; what each test then checks about placement,
+   ordering and lifecycle status is exactly what it checked before. */
+const pastEventsSummary = (): HTMLElement => {
+  const summary = screen
+    .getByRole("heading", { name: /past events/i, level: 2 })
+    .closest("summary");
+
+  if (!summary) {
+    throw new Error("Past Events heading is not inside a <summary>");
+  }
+
+  return summary;
+};
+
+const pastEventsOpen = (): boolean =>
+  (pastEventsSummary().parentElement as HTMLDetailsElement).open;
+
+/* Opens the disclosure and waits for the cards to mount.
+ *
+ * ASYNC BECAUSE THE PLATFORM IS. HTML fires `toggle` as a QUEUED TASK, not
+ * synchronously with the click, so the dashboard's `onToggle` — and the
+ * re-render that mounts the cards — happen a task later. `act` alone
+ * flushes microtasks and would return too early; yielding to the macrotask
+ * queue inside it is what lets the toggle land first. */
+const expandPastEvents = async (): Promise<void> => {
+  const summary = pastEventsSummary();
+
+  if (!pastEventsOpen()) {
+    await act(async () => {
+      summary.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+};
+
+/* Opens the disclosure, then returns the section around it.
+   Every assertion made through this helper is unchanged from before the
+   section became collapsible; opening it is the only step that is new. */
+const expiredSection = async (): Promise<HTMLElement> => {
+  await expandPastEvents();
+  return sectionFor(/past events/i);
+};
 
 /* Company names as EventCard renders them: an <h3> per card. Returned in DOM
    order so ordering assertions read naturally. */
@@ -121,7 +168,7 @@ describe("an Event is placed by its backend temporalStatus", () => {
       makeEvent({ company: "Microsoft", temporalStatus: "expired" }),
     ]);
 
-    expect(companiesIn(expiredSection())).toEqual(["Microsoft"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Microsoft"]);
   });
 
   it("does not leave an expired Event in the Upcoming section", async () => {
@@ -167,15 +214,15 @@ describe("a mixed list is split between the two sections", () => {
   it("puts the expired Event under Expired Events", async () => {
     await renderDashboard(mixed());
 
-    expect(companiesIn(expiredSection())).toEqual(["Microsoft"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Microsoft"]);
   });
 
   it("puts no Event in the wrong section", async () => {
     await renderDashboard(mixed());
 
     expect(companiesIn(upcomingSection())).not.toContain("Microsoft");
-    expect(companiesIn(expiredSection())).not.toContain("Google");
-    expect(companiesIn(expiredSection())).not.toContain("Amazon");
+    expect(companiesIn(await expiredSection())).not.toContain("Google");
+    expect(companiesIn(await expiredSection())).not.toContain("Amazon");
   });
 });
 
@@ -202,7 +249,7 @@ describe("the dashboard ignores the Event's own date and time", () => {
     // Identical dates, opposite sections: only `temporalStatus` can produce
     // this, so no date comparison can be responsible for the split.
     expect(companiesIn(upcomingSection())).toEqual(["Google"]);
-    expect(companiesIn(expiredSection())).toEqual(["Microsoft"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Microsoft"]);
   });
 
   it("keeps a long-past Event upcoming when the backend says so", async () => {
@@ -226,7 +273,7 @@ describe("the dashboard ignores the Event's own date and time", () => {
       }),
     ]);
 
-    expect(companiesIn(expiredSection())).toEqual(["Microsoft"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Microsoft"]);
   });
 
   it("ignores time and isTimeEstimated entirely", async () => {
@@ -248,7 +295,7 @@ describe("the dashboard ignores the Event's own date and time", () => {
     ]);
 
     expect(companiesIn(upcomingSection())).toEqual(["Google"]);
-    expect(companiesIn(expiredSection())).toEqual(["Microsoft"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Microsoft"]);
   });
 });
 
@@ -271,7 +318,7 @@ describe("lifecycle status does not decide the temporal section", () => {
       }),
     ]);
 
-    expect(companiesIn(expiredSection())).toEqual(["Google"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Google"]);
     expect(companiesIn(upcomingSection())).toEqual(["Amazon"]);
   });
 
@@ -282,7 +329,7 @@ describe("lifecycle status does not decide the temporal section", () => {
         makeEvent({ company: "Google", status, temporalStatus: "expired" }),
       ]);
 
-      expect(companiesIn(expiredSection())).toEqual(["Google"]);
+      expect(companiesIn(await expiredSection())).toEqual(["Google"]);
     },
   );
 
@@ -296,7 +343,13 @@ describe("lifecycle status does not decide the temporal section", () => {
     ]);
 
     // Grouping by time must not cost the card any information it shows today.
-    expect(within(expiredSection()).getByText("confirmed")).toBeInTheDocument();
+    // The card now renders the STATUS LABEL rather than the raw column
+    // value (`statusLabel` in eventDisplay), so this asserts the label —
+    // the assertion this suite cares about is that the status is still on
+    // the card at all, and it still is.
+    expect(
+      within(await expiredSection()).getByText("Confirmed"),
+    ).toBeInTheDocument();
   });
 });
 
@@ -331,7 +384,7 @@ describe("Events awaiting review stay in the review section", () => {
     ]);
 
     expect(companiesIn(upcomingSection())).toEqual(["Google"]);
-    expect(companiesIn(expiredSection())).toEqual([]);
+    expect(companiesIn(await expiredSection())).toEqual([]);
   });
 });
 
@@ -353,7 +406,7 @@ describe("empty sections", () => {
     expect(
       within(upcomingSection()).getByText("No events yet"),
     ).toBeInTheDocument();
-    expect(companiesIn(expiredSection())).toEqual(["Microsoft"]);
+    expect(companiesIn(await expiredSection())).toEqual(["Microsoft"]);
   });
 
   it("shows upcoming Events when nothing has expired", async () => {

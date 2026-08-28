@@ -4,6 +4,8 @@ import {
   STATUS_TONE,
   confidenceMeta,
   formatDateTime,
+  stageLabel,
+  statusLabel,
   titleCase,
 } from "../lib/eventDisplay";
 
@@ -92,7 +94,9 @@ export default function EventDetailsDrawer({
           <div className="drawer__row">
             <dt className="drawer__label">Stage</dt>
             <dd className="drawer__value">
-              <span className={`event-badge ${badgeClass}`}>{event.stage}</span>
+              <span className={`event-badge ${badgeClass}`}>
+                {stageLabel(event.stage)}
+              </span>
             </dd>
           </div>
 
@@ -122,7 +126,7 @@ export default function EventDetailsDrawer({
             <dd className="drawer__value">
               <span className={`event-status ${statusClass}`}>
                 <span className="event-status__dot" aria-hidden="true" />
-                {event.status}
+                {statusLabel(event.status)}
               </span>
             </dd>
           </div>

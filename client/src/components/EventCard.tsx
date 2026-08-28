@@ -1,8 +1,9 @@
 import {
   STAGE_BADGE,
   STATUS_TONE,
-  confidenceMeta,
   formatDateTime,
+  stageLabel,
+  statusLabel,
   titleCase,
 } from "../lib/eventDisplay";
 
@@ -55,12 +56,20 @@ export default function EventCard({
   event: Event;
   onSelect: () => void;
 }) {
-  const {
-    label: confLabel,
-    tone: confClass,
-    percent: confPercent,
-  } = confidenceMeta(event.confidence);
+  /* NO CONFIDENCE HERE, deliberately.
+     `event.confidence` is untouched on the payload and on the type; it
+     is simply not something this card says. It measures how sure the
+     extractor was, which is a fact about the pipeline rather than about
+     the placement drive — and a red "Low · 44%" chip on a real event
+     reads as though the EVENT is in doubt. Where it genuinely informs a
+     decision it is still shown: EventDetailsDrawer states it in full,
+     and ReviewCard puts it beside the fields it justifies. Low
+     confidence is also not lost information here, because the
+     low-confidence branch of email processing is exactly what routes an
+     event to `status: "review"` in the first place. */
 
+  /* Tone still keys off the RAW value — the class maps are the
+     backend's vocabulary, and only the visible text is translated. */
   const badgeClass = STAGE_BADGE[event.stage] ?? "badge-default";
   const statusClass = STATUS_TONE[event.status] ?? "status-default";
 
@@ -93,7 +102,9 @@ export default function EventCard({
         <h3 className="event-card__company" title={company}>
           {company}
         </h3>
-        <span className={`event-badge ${badgeClass}`}>{event.stage}</span>
+        <span className={`event-badge ${badgeClass}`}>
+          {stageLabel(event.stage)}
+        </span>
       </header>
 
       <div className="event-card__body">
@@ -117,7 +128,13 @@ export default function EventCard({
           <VenueIcon />
           <span className="event-detail__content">
             {event.venue ? (
-              <span className="event-detail__primary">{event.venue}</span>
+              /* One weight below the date above it. Both rows were 600,
+                 which made "where" compete with "when" — and when is
+                 the thing a student scans a card for. Same size, same
+                 colour, so the venue stays fully readable. */
+              <span className="event-detail__primary event-detail__primary--venue">
+                {event.venue}
+              </span>
             ) : (
               <span className="event-detail__placeholder">To be announced</span>
             )}
@@ -125,25 +142,13 @@ export default function EventCard({
         </p>
       </div>
 
+      {/* The footer is now the status alone. It keeps its rule and its
+          `margin-top: auto` so footers still line up across a grid row
+          whether or not the cards above them are the same height. */}
       <footer className="event-card__footer">
-        <span
-          className={`event-confidence ${confClass}`}
-          title={`AI extraction confidence: ${confPercent}%`}
-        >
-          <span className="event-confidence__meter" aria-hidden="true">
-            <span
-              className="event-confidence__fill"
-              style={{ width: `${confPercent}%` }}
-            />
-          </span>
-          <span className="event-confidence__text">
-            {confLabel} · {confPercent}%
-          </span>
-        </span>
-
         <span className={`event-status ${statusClass}`}>
           <span className="event-status__dot" aria-hidden="true" />
-          {event.status}
+          {statusLabel(event.status)}
         </span>
       </footer>
     </article>

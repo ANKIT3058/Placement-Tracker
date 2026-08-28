@@ -200,6 +200,12 @@ code {
     --page-gutter: 16px;
     --page-block-start: 24px;
     --page-block-end: 40px;
+    /* The rhythm that desktop and tablet already step down through, taken
+       one step further. Seven top-level blocks stack on a phone, so the
+       gap alone was spending ~190px — a fifth of the viewport — on
+       nothing. Every consumer scales together because they all read this
+       one token; no block declares its own. */
+    --section-gap: var(--space-5);
   }
 }
 
@@ -304,6 +310,95 @@ code {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: var(--space-4);
+}
+
+/* ── Dashboard: past events disclosure ────────────────────
+   The Expired section, collapsed. Styled to read as one rank below a
+   section header rather than as a button: it is a way back to history,
+   not an action. Everything below is the shared section vocabulary —
+   the same h2 size, the same count chip — set a little quieter. */
+
+.past-events {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.past-events__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: inherit;
+  cursor: pointer;
+  /* The default triangle is replaced by the chevron at the end of the
+     row. Both properties are needed: Safari uses the WebKit pseudo. */
+  list-style: none;
+  transition: background-color var(--t-fast) var(--ease);
+}
+
+.past-events__summary::-webkit-details-marker {
+  display: none;
+}
+
+.past-events__summary:hover {
+  background: var(--accent-bg);
+}
+
+/* Rings the whole row rather than the text inside it, so the target and
+   the focus indicator are the same shape. */
+.past-events__summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Matches .section-header h2 exactly, minus the weight: a closed
+   section should not shout as loudly as an open one. */
+.past-events__title {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.3;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  color: var(--text);
+}
+
+/* `auto` pushes the chevron to the far end, so the row reads
+   title · count ......... state. */
+.past-events__chevron {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  color: var(--text);
+  transition: transform var(--t-base) var(--ease);
+}
+
+.past-events[open] .past-events__title {
+  color: var(--text-h);
+}
+
+.past-events[open] .past-events__chevron {
+  transform: rotate(180deg);
+}
+
+/* Separated from the summary by a rule rather than a gap, so an open
+   section still reads as one block. */
+.past-events__body {
+  padding: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The chevron still turns — it is the only visual carrier of the
+     state — it just arrives without the sweep. */
+  .past-events__chevron {
+    transition: none;
+  }
+
+  .past-events__summary {
+    transition: none;
+  }
 }
 
 /* ── Dashboard: section controls ──────────────────────────
@@ -608,6 +703,16 @@ code {
   overflow-wrap: anywhere;
 }
 
+/* Venue, one weight below the date. Both rows sat at 600, so "where"
+   read as loudly as "when" — and a student scanning a list of drives is
+   looking for when. Weight only: same size and same --text-h colour, so
+   nothing about readability or contrast changes. `overflow-wrap:
+   anywhere` is inherited from the base rule, which is what keeps a long
+   venue string from pushing the card wider at 390px. */
+.event-detail__primary--venue {
+  font-weight: 500;
+}
+
 .event-detail__secondary {
   display: inline-flex;
   align-items: center;
@@ -641,37 +746,12 @@ code {
   border-top: 1px solid var(--border);
 }
 
-/* ── Event card: confidence ───────────────────────────── */
-
-.event-confidence {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--tone);
-}
-
-.event-confidence__meter {
-  flex: 0 0 auto;
-  width: 34px;
-  height: 4px;
-  border-radius: 99px;
-  background: var(--border);
-  overflow: hidden;
-}
-
-.event-confidence__fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--tone);
-}
-
-.event-confidence__text {
-  white-space: nowrap;
-}
+/* ── Confidence tones ─────────────────────────────────────
+   The card's own confidence meter is gone — extraction certainty is not
+   what a student came to read — so `.event-confidence*` went with it.
+   These three tone tokens stay: EventDetailsDrawer (.drawer__meter,
+   .drawer__conf-text) and ReviewCard (.review-confidence) both still
+   show confidence where it informs a decision, and both key off these. */
 
 .conf-high {
   --tone: var(--green);
@@ -701,7 +781,10 @@ code {
   border-radius: 99px;
   font-size: 11px;
   font-weight: 600;
-  text-transform: capitalize;
+  /* NO text-transform. `statusLabel` owns the wording now, and it can do
+     what a transform cannot: turn `review` into "Needs review", leave
+     the DOM text matching what is drawn, and sentence-case a multi-word
+     value instead of Capitalising Every Word Of It. */
   white-space: nowrap;
   background: var(--tone-bg);
   color: var(--tone);
@@ -741,15 +824,37 @@ code {
 }
 
 /* ── Event card: responsive ───────────────────────────── */
-/* The grid already reflows to one column, so only type sizing and
-   footer wrapping need attention at the small end. */
+/* The grid already reflows to one column, so only type sizing, footer
+   wrapping and the card's internal rhythm need attention at the small
+   end.
+
+   COMPACTION IS SPACING ONLY. Every row the card renders on a desktop
+   still renders here — company, stage badge, date, time when known,
+   venue, confidence, status — and the card as a whole is still the tap
+   target, so nothing shrinks that a thumb has to hit. One step down the
+   spacing scale at each of the four seams (shell padding, the gaps
+   between header/body/footer, the gap between the two detail rows, and
+   the footer's rule) takes roughly 25px off a ~195px card without
+   moving a single element. */
 
 @media (max-width: 640px) {
+  .event-card {
+    /* Horizontal padding is untouched: it sets the text's measure
+       against the screen edge, and that was never the problem. */
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-2);
+  }
+
   .event-card__company {
     font-size: 16px;
   }
 
+  .event-card__body {
+    gap: var(--space-2);
+  }
+
   .event-card__footer {
+    padding-top: var(--space-2);
     row-gap: var(--space-2);
   }
 }
@@ -927,12 +1032,34 @@ code {
 }
 
 /* ── Review card: responsive ──────────────────────────── */
-/* The grid already collapses to one column; only the header row and
-   the hint need attention once the card is full-bleed. */
+/* The grid already collapses to one column; the header row, the hint
+   and the card's internal rhythm need attention once the card is
+   full-bleed.
+
+   NOTHING IS DROPPED. Both editable fields, the reason callout, the
+   confidence meter and Confirm & Save all render exactly as they do on
+   desktop — and .field-input keeps its 16px type and 9px padding, so
+   the two inputs and the button stay full-size touch targets. Only the
+   space between them steps down. */
 
 @media (max-width: 640px) {
+  .card-review {
+    /* Horizontal padding held at --space-4 so the fields keep their
+       inset from the amber edge; only the vertical seams tighten. */
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-2);
+  }
+
   .review-header {
     row-gap: var(--space-1);
+  }
+
+  .review-fields {
+    gap: var(--space-2);
+  }
+
+  .review-actions {
+    padding-top: var(--space-2);
   }
 
   .review-hint {
@@ -1250,26 +1377,90 @@ code {
   color: var(--red);
 }
 
-/* ── Email input: responsive ──────────────────────────── */
+/* ── Email input: responsive ──────────────────────────────
+   `.email-section` is the shell all three UTILITY blocks wear — Process
+   Placement Email, Student Profile and Shortlists. On a phone it was
+   also, pixel for pixel, the same object as an event card: white
+   surface, 1px border, 12px radius, a bold heading. Three of them
+   stacked below the events read as the page rather than as its tools,
+   and they were spending a third of the document's height saying so.
+
+   SO THE CARD SHELL COMES OFF, and nothing else does. Every control,
+   every hint, every message and every handler is untouched — this is a
+   change of surface, not of content. Divided by a hairline and set
+   flush to the page gutter, the three tools read as a band of utilities
+   under the events instead of three more cards competing with them.
+   Cards above are things you look at; rules below are things you use.
+
+   Desktop and tablet keep the card exactly as Phase 2 left it. */
 
 @media (max-width: 640px) {
   .email-section {
-    padding: var(--space-4);
+    /* Flush to the gutter: the shell's own inset is what made these
+       read as cards, and dropping it also gives the textarea and the
+       shortlist rows the full measure. */
+    padding: var(--space-4) 0 0;
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    gap: var(--space-3);
+  }
+
+  /* One rank below .section-header h2, the way .past-events__title
+     already sits one rank below an open section. Still an h2, still in
+     the outline, still the section's accessible name — only its weight
+     on the screen changes. */
+  .email-section h2 {
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .email-hint {
+    font-size: 12px;
   }
 
   .email-textarea {
     /* 16px avoids iOS Safari's zoom-on-focus for form fields. */
     font-size: 16px;
+    /* THE 120px FLOOR HAS BEEN DEAD CODE. `rows={6}` sizes the element
+       to ~184px, which is above the floor, so the floor never decided
+       anything and the mobile textarea stayed desktop-tall — a fifth of
+       a 844px viewport held by an empty box in a utility section.
+       Setting the height to the floor this block already declares is
+       what finally puts it in charge; no new value is introduced.
+       Still `resize: vertical`, still scrolls, so a long paste is as
+       readable as it ever was. */
     min-height: 120px;
+    height: 120px;
   }
 
-  /* Full-width action; the counter moves onto its own line beside it. */
-  .email-footer .btn-primary {
-    flex: 1 1 100%;
+  /* A SINGLE-LINE <input> WEARING THE TEXTAREA'S SHELL.
+     StudentProfileSection reuses .email-textarea for the registration
+     number so the two forms look alike — and inherited the 120px floor
+     with it, spending an eighth of the viewport on a box holding one
+     short value. The floor is a textarea's business; an input sizes to
+     its own line. Class-and-element selector rather than an id, so any
+     future single-line field in this shell is covered too. */
+  input.email-textarea {
+    /* Both are needed, and for the same reason: the rule above sets a
+       height AND a floor for the multi-line case, and an input must
+       opt out of each. `height: auto` lets it size to its own single
+       line; `min-height: 0` stops the floor putting the 120px back. */
+    height: auto;
+    min-height: 0;
+    padding: var(--space-2) var(--space-3);
   }
 
-  .email-count {
-    margin-left: 0;
+  /* The action sits INLINE, beside Clear and beside the counter.
+     Full-width made a utility's button the loudest control on the
+     screen — wider than any event card's content and the same fill as
+     the confirm action in Needs Review. Its height is untouched
+     (.btn-primary's 11px padding, comfortably past 44px), so this costs
+     nothing at the thumb; it also lets Save and Clear share one row
+     instead of stacking. */
+  .email-footer {
+    gap: var(--space-2);
   }
 }
 
@@ -1657,10 +1848,9 @@ code {
   width: 72%;
 }
 
-.skeleton--meter {
-  width: 88px;
-  height: 12px;
-}
+/* `.skeleton--meter` stood in for the card's confidence meter and went
+   with it — the real footer has one block now, so the placeholder does
+   too. */
 
 .skeleton--status {
   width: 72px;
@@ -1741,8 +1931,11 @@ code {
 /* ── Empty state: responsive ──────────────────────────── */
 
 @media (max-width: 640px) {
+  /* An empty section is the one that has least to say and was taking a
+     card's worth of height to say it — "Nothing needs review" is good
+     news, not a placeholder to fill the fold with. */
   .empty-state {
-    padding: var(--space-6) var(--space-4);
+    padding: var(--space-5) var(--space-4);
   }
 
   .empty-state__icon {
@@ -1757,7 +1950,28 @@ code {
    Only genuinely breakpoint-specific rules belong here. */
 
 @media (max-width: 640px) {
+  /* The masthead is read once and scrolled past. At 390px its title
+     runs to two lines and its subtitle to two more, so the 32px + 24px
+     it spent below itself was pushing the first event card most of a
+     screen down. */
+  .dashboard-header {
+    margin-bottom: var(--space-5);
+    padding-bottom: var(--space-4);
+  }
+
   .section-header {
     gap: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+
+  /* Search and chips are one row nearer the cards they filter. Their
+     own hit areas are untouched — .section-search__input keeps its 16px
+     type and .filter-chip its 9px padding. */
+  .section-controls {
+    margin-bottom: var(--space-3);
+  }
+
+  .cards-grid {
+    gap: var(--space-3);
   }
 }

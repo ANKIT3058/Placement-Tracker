@@ -30,8 +30,10 @@ export default function EventCardSkeleton() {
         </div>
       </div>
 
+      {/* One block, matching the real footer: the confidence meter that
+          used to stand beside the status is no longer on the card, and
+          a skeleton that still promised one would resolve into a gap. */}
       <div className="event-card__footer">
-        <span className="skeleton skeleton--meter" />
         <span className="skeleton skeleton--status" />
       </div>
     </div>

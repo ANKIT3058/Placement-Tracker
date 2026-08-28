@@ -82,6 +82,27 @@ function SearchIcon() {
   );
 }
 
+/* The disclosure's only state indicator. Decorative on purpose: <details>
+   already exposes expanded/collapsed to assistive technology, so a second,
+   hand-maintained announcement would be one more thing able to disagree
+   with the element's real state. */
+function ChevronIcon() {
+  return (
+    <svg
+      className="past-events__chevron"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
 
 export default function Dashboard() {
   const [events, setEvents] = useState<Event[]>([]);
@@ -92,6 +113,18 @@ export default function Dashboard() {
   const [error, setError] = useState<unknown>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState<string | null>(null);
+
+  /* Whether the Past Events disclosure is open. Collapsed on first paint
+     because history is the least actionable thing this page holds — with
+     68 expired events against 3 upcoming, rendering it by default buries
+     the answer to "what do I need to care about right now?".
+
+     Local, and not persisted: a remembered preference would need a
+     storage key and a migration story for a single boolean, and the
+     collapsed default is the one that should win on every visit anyway.
+     `<details>` owns the real state; this mirrors it so the cards can be
+     left unrendered while closed. */
+  const [pastEventsOpen, setPastEventsOpen] = useState(false);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -237,39 +270,12 @@ export default function Dashboard() {
         </header>
 
         <main className="dashboard-main">
-          {/* Manual ingestion is an authenticated feature — POST /email is
-              behind requireAuth and Email.userId is NOT NULL, so a signed-out
-              caller has no owner to attribute a row to and is refused. Offering
-              the form in that state advertises an action that cannot succeed,
-              directly above the panel explaining they are signed out.
-
-              Only the authentication-required state hides it. A 500 says
-              nothing about who the user is, and during loading nothing is known
-              yet, so both keep the form exactly where it was. */}
-          {!isAuthenticationRequired(error) && (
-            <EmailInput refresh={fetchData} />
-          )}
-
-          {/* Optional campus information, and deliberately just another
-              section: it gates nothing, and a student who never sets a
-              registration number sees an application that behaves identically.
-
-              Hidden in the authentication-required state for the same reason
-              the form above is — the endpoints behind it are authenticated, so
-              offering the control advertises an action that cannot succeed.
-              The section also hides itself when its own load fails, so a 500
-              here adds no second error banner to a page that already reports
-              what went wrong. */}
-          {!isAuthenticationRequired(error) && <StudentProfileSection />}
-
-          {/* Reads the profile section's field indirectly: the server decides
-              whether there is a registration number to check with, and this
-              section explains all four outcomes rather than showing an empty
-              list for two different reasons. Hidden in the same
-              authentication-required state, and it hides itself when its own
-              load fails. */}
-          {!isAuthenticationRequired(error) && <ShortlistSection />}
-
+          {/* THE EVENTS COME FIRST.
+              The three tool panels below used to sit here, above everything,
+              so the page opened on a raw-email textarea and a registration
+              number field and only then reached the events. They are
+              maintenance, not the reason anyone opens this page; the order
+              now says so. Nothing about them changed except where they are. */}
           {loading ? (
             <section className="section" aria-busy="true">
               {/* Mirrors the loaded section header so the heading doesn't
@@ -370,10 +376,21 @@ export default function Dashboard() {
                 </p>
 
                 {upcomingEvents.length === 0 ? (
+                  /* Two different situations wore one sentence, and it
+                     had also gone stale: it said the email form was
+                     "above", which stopped being true when Phase 2 moved
+                     the tools below the events. Someone whose drives have
+                     all happened was being told to paste an email, with
+                     no hint that their history is a section further down
+                     — an empty Upcoming is not an empty account. */
                   <EmptyState
                     icon="calendar"
                     title="No events yet"
-                    description="Paste a placement email above and the extracted events will show up here."
+                    description={
+                      expiredEvents.length > 0
+                        ? "Nothing is coming up right now — your earlier drives are under Past Events below."
+                        : "Paste a placement email below and any events it mentions will show up here."
+                    }
                   />
                 ) : visibleEvents.length === 0 ? (
                   <EmptyState
@@ -424,37 +441,104 @@ export default function Dashboard() {
               </section>
 
               {/* Last, because it is the least actionable of the three: what
-                  has already happened, kept for reference. Placing it here
-                  also leaves Upcoming and Needs Review exactly where they
-                  were. The search and stage filters stay scoped to Upcoming —
-                  they narrow what you are deciding about, not what you are
-                  looking back at. */}
-              <section className="section">
-                <div className="section-header">
-                  <h2>Expired Events</h2>
-                  <span className="section-count">{expiredEvents.length}</span>
-                </div>
+                  has already happened, kept for reference. The search and
+                  stage filters stay scoped to Upcoming — they narrow what you
+                  are deciding about, not what you are looking back at.
 
-                {expiredEvents.length === 0 ? (
-                  <EmptyState
-                    icon="calendar"
-                    title="Nothing has expired"
-                    description="Events move here once their scheduled date has passed."
-                  />
-                ) : (
-                  <div className="cards-grid">
-                    {expiredEvents.map((e) => (
-                      <EventCard
-                        key={e.id}
-                        event={e}
-                        onSelect={() => setSelectedEvent(e)}
-                      />
-                    ))}
-                  </div>
-                )}
+                  COLLAPSED, because on real data this section is the page.
+                  Sixty-eight expired events against three upcoming ones means
+                  a student scrolls past everything that already happened to
+                  reach the thing that has not. Reference material should stay
+                  reachable without being the first thing in the way.
+
+                  A native <details>, not a hand-rolled toggle: it carries
+                  keyboard activation, the expanded/collapsed state that
+                  assistive technology reads, and focus behaviour, none of
+                  which has to be written or kept correct here. */}
+              <section className="section">
+                <details
+                  className="past-events"
+                  open={pastEventsOpen}
+                  /* `<details>` owns the truth; this mirrors it so the cards
+                     below can be left unrendered while closed. Reading
+                     `currentTarget.open` rather than negating our own state
+                     keeps the two in step even when the element is toggled by
+                     something other than a click. */
+                  onToggle={(e) => setPastEventsOpen(e.currentTarget.open)}
+                >
+                  <summary className="past-events__summary">
+                    {/* Still an <h2>, so the section keeps its place in the
+                        document outline whether it is open or shut. */}
+                    <h2 className="past-events__title">Past Events</h2>
+                    <span className="section-count">{expiredEvents.length}</span>
+                    <ChevronIcon />
+                  </summary>
+
+                  {/* NOT RENDERED WHILE CLOSED — hidden with CSS it would
+                      still be sixty-eight cards' worth of DOM, and the point
+                      of collapsing it is that none of that work happens until
+                      someone asks for it. */}
+                  {pastEventsOpen && (
+                    <div className="past-events__body">
+                      {expiredEvents.length === 0 ? (
+                        <EmptyState
+                          icon="calendar"
+                          title="Nothing has expired"
+                          description="Events move here once their scheduled date has passed."
+                        />
+                      ) : (
+                        <div className="cards-grid">
+                          {expiredEvents.map((e) => (
+                            <EventCard
+                              key={e.id}
+                              event={e}
+                              onSelect={() => setSelectedEvent(e)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </details>
               </section>
             </>
           )}
+
+          {/* ── Secondary tools ──────────────────────────────────────
+              Below the events, deliberately. Each block is unchanged from
+              where it used to sit at the top of the page — same components,
+              same props, same authentication guards. Only the order moved.
+
+              Manual ingestion is an authenticated feature: POST /email is
+              behind requireAuth and Email.userId is NOT NULL, so a signed-out
+              caller has no owner to attribute a row to and is refused.
+              Offering the form in that state advertises an action that cannot
+              succeed. Only the authentication-required state hides it — a 500
+              says nothing about who the user is, and during loading nothing is
+              known yet. */}
+          {!isAuthenticationRequired(error) && (
+            <EmailInput refresh={fetchData} />
+          )}
+
+          {/* Optional campus information, and deliberately just another
+              section: it gates nothing, and a student who never sets a
+              registration number sees an application that behaves identically.
+
+              Hidden in the authentication-required state for the same reason
+              the form above is — the endpoints behind it are authenticated, so
+              offering the control advertises an action that cannot succeed.
+              The section also hides itself when its own load fails, so a 500
+              here adds no second error banner to a page that already reports
+              what went wrong. */}
+          {!isAuthenticationRequired(error) && <StudentProfileSection />}
+
+          {/* Reads the profile section's field indirectly: the server decides
+              whether there is a registration number to check with, and this
+              section explains all four outcomes rather than showing an empty
+              list for two different reasons. Hidden in the same
+              authentication-required state, and it hides itself when its own
+              load fails. */}
+          {!isAuthenticationRequired(error) && <ShortlistSection />}
         </main>
       </div>
 

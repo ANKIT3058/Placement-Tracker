@@ -12,7 +12,7 @@
  * job board stored as a domain, and two initialisms. */
 
 import { describe, expect, it } from "vitest";
-import { titleCase } from "../eventDisplay";
+import { stageLabel, statusLabel, titleCase } from "../eventDisplay";
 
 describe("titleCase", () => {
   it.each([
@@ -113,6 +113,118 @@ describe("titleCase", () => {
 
     it("leaves a leading digit alone and capitalises the first letter", () => {
       expect(titleCase("3m")).toBe("3M");
+    });
+  });
+});
+
+/* Status wording.
+ *
+ * The backend's lifecycle vocabulary is storage, not sentences. These
+ * pin the two properties that matter: the four values it actually
+ * writes read as English, and a value it has never written yet is still
+ * rendered as SOMETHING — the failure this replaces was a CSS
+ * `text-transform`, which could not translate `review` and left the DOM
+ * text lower case for anyone reading the accessibility tree. */
+
+describe("statusLabel", () => {
+  describe("the statuses this backend writes", () => {
+    it.each([
+      ["scheduled", "Scheduled"],
+      ["confirmed", "Confirmed"],
+      ["rescheduled", "Rescheduled"],
+    ])("%j → %j", (input, expected) => {
+      expect(statusLabel(input)).toBe(expected);
+    });
+
+    /* The one real translation: a queue name on the server, a reason to
+       the person reading it. */
+    it("names the review queue in the student's terms", () => {
+      expect(statusLabel("review")).toBe("Needs review");
+    });
+  });
+
+  /* The point of the fallback: the backend may add a status tomorrow and
+     no card may break because of it. */
+  describe("a status the frontend has never seen", () => {
+    it("still reads as a word", () => {
+      expect(statusLabel("something-new")).toBe("Something new");
+    });
+
+    it.each([
+      ["cancelled", "Cancelled"],
+      ["on_hold", "On hold"],
+      ["awaiting_confirmation", "Awaiting confirmation"],
+    ])("%j → %j", (input, expected) => {
+      expect(statusLabel(input)).toBe(expected);
+    });
+
+    /* Sentence case, not Title Case: only the first letter is raised, so
+       an acronym in a future value survives intact. */
+    it("does not lower-case the rest of the value", () => {
+      expect(statusLabel("OA_pending")).toBe("OA pending");
+    });
+
+    it("never returns an empty string", () => {
+      expect(statusLabel("")).toBe("Unknown");
+      expect(statusLabel("   ")).toBe("Unknown");
+    });
+
+    it("never returns undefined for any input", () => {
+      for (const value of ["", "x", "a-b-c", "ALLCAPS", "1"]) {
+        expect(typeof statusLabel(value)).toBe("string");
+        expect(statusLabel(value)).not.toBe("");
+      }
+    });
+  });
+});
+
+/* Stage wording.
+ *
+ * Stages are free text — the extractor emits four canonical ones and
+ * ReviewCard lets a human retype the field freehand — so this must stay
+ * a pass-through with exactly one substitution, not a dictionary that
+ * silently drops rounds it was not taught. */
+
+describe("stageLabel", () => {
+  describe("passes real stages through untouched", () => {
+    it.each([
+      ["OA"],
+      ["Interview"],
+      ["PPT"],
+      ["Registration"],
+      ["Online Assessment"],
+      ["Pre-Placement Talk"],
+    ])("%j is unchanged", (input) => {
+      expect(stageLabel(input)).toBe(input);
+    });
+
+    /* A round nobody has taught this function about still reaches the
+       badge verbatim — the alternative would be hiding it. */
+    it("passes an unrecognised round through as written", () => {
+      expect(stageLabel("Group Discussion")).toBe("Group Discussion");
+      expect(stageLabel("Aptitude Round 2")).toBe("Aptitude Round 2");
+    });
+  });
+
+  /* `extractStage` returns the literal "unknown" when it cannot read a
+     round from an email. That is the extractor's vocabulary, and it was
+     reaching the student as a shouted UNKNOWN badge. */
+  describe("the unresolved sentinel", () => {
+    it.each([["unknown"], ["Unknown"], ["UNKNOWN"], ["  unknown  "]])(
+      "%j becomes a neutral label",
+      (input) => {
+        expect(stageLabel(input)).toBe("Other");
+      },
+    );
+
+    it("treats a blank stage the same way", () => {
+      expect(stageLabel("")).toBe("Other");
+      expect(stageLabel("   ")).toBe("Other");
+    });
+
+    /* "unknown" is only a sentinel when it is the WHOLE value. */
+    it("does not rewrite a stage that merely contains the word", () => {
+      expect(stageLabel("Unknown Round")).toBe("Unknown Round");
     });
   });
 });
