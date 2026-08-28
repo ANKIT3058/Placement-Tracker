@@ -248,8 +248,12 @@ code {
 /* ── Dashboard: sections ──────────────────────────────── */
 
 /* Owns the vertical rhythm between every top-level block, so the
-   blocks themselves carry no bottom margin. */
-.dashboard-content {
+   blocks themselves carry no bottom margin.
+   Named for the element it styles: Dashboard renders `<main
+   className="dashboard-main">`, and this rule was written against a
+   `.dashboard-content` that no element has ever carried — so the gap it
+   declares reached nothing and every section sat flush against the next. */
+.dashboard-main {
   display: flex;
   flex-direction: column;
   gap: var(--section-gap);
@@ -1016,6 +1020,58 @@ code {
   box-shadow: none;
 }
 
+/* The quiet variant: Log out, and Clear on the profile form. Neither is
+   the action a screen is for, so neither competes with the filled
+   primary beside it.
+
+   IT WAS USED BEFORE IT EXISTED. Both call sites shipped `btn
+   btn-secondary` while only `.btn-primary` and `.btn-confirm` were
+   defined, so they fell through to the base `.btn` — which sets
+   `border: none` and NO background, leaving the browser's default
+   `buttonface` grey. The base's hover is
+   `color-mix(… var(--btn-bg) …)`, and with `--btn-bg` unset that
+   declaration is invalid, so they had no hover state either.
+
+   Setting `--btn-bg` is what re-enables the shared hover and active
+   rules; nothing about the base or the other two variants changes.
+
+   1px of border with 1px less padding, so this sits at exactly the same
+   height as .btn-primary's 11px/0 next to it. */
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 10px 16px;
+  --btn-bg: var(--bg);
+  background-color: var(--btn-bg);
+  color: var(--text-h);
+  border: 1px solid var(--border);
+}
+
+/* The base darkens the fill on hover, which on a near-white surface is
+   the whole effect. The border moves too so the change is unmistakable
+   in dark mode, where darkening an already-dark fill is subtle. */
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--text);
+}
+
+/* The base rings a button in its own fill — right for a saturated
+   variant, invisible here, where the fill IS the page. Back to the
+   app-wide accent ring. */
+.btn-secondary:focus-visible {
+  outline-color: var(--focus-ring);
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Lifted off the page rather than flush with it, so the button reads
+     as a surface at rest — and so the base's darkening hover has
+     somewhere to travel. */
+  .btn-secondary {
+    --btn-bg: color-mix(in srgb, var(--border) 60%, var(--bg));
+  }
+}
+
 .btn-icon {
   flex: 0 0 auto;
   width: 15px;
@@ -1064,7 +1120,7 @@ code {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: var(--space-5);
-  /* Spacing below is owned by .dashboard-content's gap. */
+  /* Spacing below is owned by .dashboard-main's gap. */
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -1215,6 +1271,49 @@ code {
   .email-count {
     margin-left: 0;
   }
+}
+
+/* ── Shortlists: appearance list ──────────────────────────
+   The shortlists a registration number was found on. Lives with the
+   email-section rules because ShortlistSection reuses that shell.
+
+   The <ul>/<li> stay exactly as they are — a list of findings IS a
+   list, and a screen reader announcing "3 items" is the point. Only the
+   default marker and its 40px indent go, which is what made this the
+   one block on the page still wearing browser chrome. */
+.shortlist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.shortlist-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+/* The marker the list-style removed, redrawn in the success tone the
+   heading above it already uses — so the row reads as a hit, not as a
+   neutral row. `currentColor` is not used here: the text is --text-h
+   and the dot is deliberately not. */
+.shortlist-list li::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
 }
 
 /* ── Event details drawer ─────────────────────────────────
