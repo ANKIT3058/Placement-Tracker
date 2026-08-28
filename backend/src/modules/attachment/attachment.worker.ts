@@ -9,6 +9,24 @@ import { describeGmailError } from "../gmail/gmail.errors.js";
 // cannot ask how many are left without a Queue, which is why this import exists
 // and why it appears only now (G-7.2). Nothing here enqueues.
 import { attachmentQueue } from "./attachment.queue.js";
+import {
+  assertWorkerEnv,
+  ATTACHMENT_WORKER_REQUIRED_ENV,
+} from "../../shared/config/worker-env.js";
+
+// FAIL FAST ON A MISCONFIGURED PROCESS (PR-10A).
+//
+// THE FIRST STATEMENT THIS MODULE EXECUTES, for the same reason it is first in
+// the email worker: everything below presumes a reachable Redis, a reachable
+// database and usable Gmail credentials.
+//
+// The requirement list is the LONGER one. This pipeline downloads the file from
+// Gmail before it parses anything, so GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
+// are as load-bearing here as DATABASE_URL — and their absence is the exact
+// failure this check was written from: a production drain that shipped no Gmail
+// credentials, failed every job at the token refresh with `400 invalid_request`,
+// and still exited green.
+assertWorkerEnv("attachment-worker", ATTACHMENT_WORKER_REQUIRED_ENV);
 
 // BATCH MODE (G-7.2), the same flag and the same convention as the email
 // worker.
@@ -64,6 +82,31 @@ worker.on("failed", (job, err) => {
   // credential-bearing GaxiosError. Reduced to safe diagnostics for the same
   // reason the sync paths are (RFC-001 §13.2).
   console.error(`Attachment job ${job?.id} failed`, describeGmailError(err));
+});
+
+// WORKER-LEVEL ERRORS (PR-10A).
+//
+// `failed` above is per-JOB. This is the channel for everything that goes wrong
+// AROUND a job: a lock that could not be renewed, a reconnect that did not take,
+// the internal `run()` loop rejecting. On a process meant to stay up for weeks
+// these are the errors that actually show up, and until now nothing listened for
+// them.
+//
+// Not listening was not fatal — `QueueBase.emit` wraps `super.emit` in a
+// try/catch, so Node's unhandled-'error' throw is swallowed and the error is
+// dumped with a bare `console.error(err)` instead of killing the process. But a
+// bare dump is precisely what this file avoids everywhere else: the errors that
+// reach this channel on THIS worker can be GaxiosErrors carrying the mailbox's
+// refresh token in the request config (RFC-001 §13.2).
+//
+// So it goes through `describeGmailError`, the same allowlist the `failed`
+// handler uses, and it logs and returns — deliberately NOT a shutdown trigger.
+// These conditions are transient, ioredis reconnects on its own, and BullMQ's
+// stalled-job checker recovers a job whose lock lapsed. Exiting here would turn
+// a recoverable blip into a restart, and on this pipeline a restart mid-job
+// costs a re-download and a re-parse.
+worker.on("error", (err) => {
+  console.error("Attachment worker error", describeGmailError(err));
 });
 
 // GRACEFUL SHUTDOWN (G-7.2).

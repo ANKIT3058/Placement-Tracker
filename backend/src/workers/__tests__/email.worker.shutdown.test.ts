@@ -106,6 +106,24 @@ const loadWorker = () => {
 // it must be set BEFORE `loadWorker()` — and cleared between tests, or a stray
 // "true" would silently turn a signal test into a batch test.
 const resetWorkerEnvironment = () => {
+  // PR-10A. The worker now refuses to start when its required configuration is
+  // absent, and that check runs as the module's first statement — before the
+  // `Worker` these tests reach through is ever constructed. `process.exit` is
+  // spied to a no-op here, so a missing variable would NOT stop the import; it
+  // would let a half-initialised module continue and fail somewhere less
+  // obvious. Supplying the names keeps every test below about the behaviour it
+  // was written for.
+  //
+  // Values are inert placeholders, never reached: `redis` and the queue are
+  // mocked, so nothing parses or dials either of these.
+  process.env.DATABASE_URL = "postgresql://test/test";
+  process.env.REDIS_URL = "redis://test";
+
+  // Not set, so `resolveRequiredEnv` does not add OPENAI_API_KEY to the
+  // requirement list. Cleared rather than assumed absent: `USE_AI` is
+  // process-wide and another suite in the same worker may have set it.
+  delete process.env.USE_AI;
+
   delete process.env.WORKER_EXIT_WHEN_DRAINED;
 
   for (const event of Object.keys(mockHandlers)) {

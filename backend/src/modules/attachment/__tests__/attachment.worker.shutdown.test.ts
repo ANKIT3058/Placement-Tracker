@@ -130,6 +130,28 @@ const loadWorker = () => {
 // `loadWorker()` — and cleared between tests, or a stray "true" would silently
 // turn a signal test into a batch test.
 const resetWorkerEnvironment = () => {
+  // PR-10A. The worker now refuses to start when its required configuration is
+  // absent, and that check runs as the module's first statement — before the
+  // `Worker` these tests reach through is ever constructed. `process.exit` is
+  // spied to a no-op here, so a missing variable would NOT stop the import; it
+  // would let a half-initialised module continue and fail somewhere less
+  // obvious. Supplying the names keeps every test below about the behaviour it
+  // was written for.
+  //
+  // FOUR names, not two: this worker downloads from Gmail, so its requirement
+  // list includes the OAuth client credentials. Values are inert placeholders,
+  // never reached — `redis`, the queue and the processing service are all
+  // mocked, so nothing dials Google or Redis.
+  process.env.DATABASE_URL = "postgresql://test/test";
+  process.env.REDIS_URL = "redis://test";
+  process.env.GOOGLE_CLIENT_ID = "test-client-id";
+  process.env.GOOGLE_CLIENT_SECRET = "test-client-secret";
+
+  // Not set, so `resolveRequiredEnv` does not add OPENAI_API_KEY to the
+  // requirement list. Cleared rather than assumed absent: `USE_AI` is
+  // process-wide and another suite in the same worker may have set it.
+  delete process.env.USE_AI;
+
   delete process.env.WORKER_EXIT_WHEN_DRAINED;
 
   for (const event of Object.keys(mockHandlers)) {

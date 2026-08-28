@@ -1,0 +1,106 @@
+# Placement Tracker — attachment-processing queue worker.
+#
+# Install to /etc/systemd/system/placement-tracker-attachment-worker.service.
+# Full procedure: docs/oracle-worker-deployment.md
+#
+# The sibling of placement-tracker-email-worker.service, and a SEPARATE unit for
+# the same reason the two GitHub workflows are separate files: the queues are
+# independent, and either worker must be restartable without touching the other.
+#
+# Three things genuinely differ from the email unit, and each is marked below:
+# this worker needs Gmail credentials, it WRITES downloaded files to disk, and
+# its jobs run long enough to need a larger stop timeout.
+
+[Unit]
+Description=Placement Tracker attachment-processing worker
+Documentation=https://github.com/ANKIT3058/Placement-Tracker/blob/main/docs/oracle-worker-deployment.md
+
+After=network-online.target
+Wants=network-online.target
+
+# Five starts per five minutes, then systemd parks the unit in `failed`. See the
+# email unit for why these live in [Unit] rather than [Service].
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+User=placement
+Group=placement
+
+WorkingDirectory=/opt/placement-tracker/backend
+
+# The SAME environment file as the email worker, deliberately. This worker's
+# requirements are a strict superset of that one's — DATABASE_URL and REDIS_URL
+# plus GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET — so one file satisfies both,
+# and a second would be two places to rotate a credential.
+EnvironmentFile=/etc/placement-tracker/worker.env
+
+# Pinned empty after EnvironmentFile so it wins. See the email unit: a stray
+# `true` here would make the process exit the moment the queue emptied and let
+# systemd restart it in a hot loop.
+Environment=WORKER_EXIT_WHEN_DRAINED=
+
+# DIFFERS FROM THE EMAIL WORKER. This worker downloads attachments and writes
+# them to disk, and the default location is `<cwd>/storage/attachments` —
+# i.e. inside /opt/placement-tracker, which ProtectSystem=strict below makes
+# read-only. Left at the default the first download would fail with EROFS on
+# every attachment forever.
+#
+# StateDirectory (below) creates and owns /var/lib/placement-tracker; this points
+# the storage root inside it.
+Environment=ATTACHMENT_STORAGE_DIR=/var/lib/placement-tracker/attachments
+
+ExecStart=/usr/bin/node dist/src/modules/attachment/attachment.worker.js
+
+Restart=on-failure
+RestartSec=10
+
+# DIFFERS FROM THE EMAIL WORKER: 300s rather than 90s.
+#
+# One attachment job is a Gmail download followed by a full PDF or spreadsheet
+# parse, and parsing is the long pole. A SIGKILL partway through is more
+# expensive here than on the email side — the replay re-downloads the file,
+# spends Gmail quota again, re-parses, and leaves the previous partial file
+# orphaned under its old UUID key, because the retry stores under a fresh one.
+# Two interruptions fail the job permanently (maxStalledCount defaults to 1) and
+# `removeOnFail: false` then keeps the deterministic jobId occupied, so nothing
+# can re-enqueue that attachment.
+#
+# Five minutes is chosen to clear a large parse rather than to bound a normal
+# one; it only matters on shutdown.
+KillSignal=SIGTERM
+TimeoutStopSec=300
+
+SyslogIdentifier=placement-attachment-worker
+
+# --- Hardening --------------------------------------------------------------
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+ProtectProc=invisible
+
+# DIFFERS FROM THE EMAIL WORKER. Creates /var/lib/placement-tracker owned by
+# User=/Group= on first start, and makes it writable through
+# ProtectSystem=strict. Preferred over a hand-made directory plus ReadWritePaths
+# because systemd creates it with the right ownership and mode itself, so the
+# unit stays correct on a rebuilt host.
+#
+# NOTE ON DISK. Under the old GitHub Actions runtime these files vanished with
+# the runner; here they persist. Nothing in the codebase reads them back yet —
+# parsed results are written to Postgres — so this directory only grows. Watch
+# it, and see the deployment guide before pruning.
+StateDirectory=placement-tracker
+StateDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

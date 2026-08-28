@@ -1,0 +1,117 @@
+# Placement Tracker — email-processing queue worker.
+#
+# Install to /etc/systemd/system/placement-tracker-email-worker.service.
+# Full procedure: docs/oracle-worker-deployment.md
+#
+# This unit replaces the manual GitHub Actions drain as the NORMAL runtime for
+# the email-processing queue. The workflow is kept for one-off maintenance; see
+# the deployment guide for the division of labour.
+
+[Unit]
+Description=Placement Tracker email-processing worker
+Documentation=https://github.com/ANKIT3058/Placement-Tracker/blob/main/docs/oracle-worker-deployment.md
+
+# network-online, not merely network. `network.target` is reached when the
+# stack is configured, which is BEFORE an address is usable; the worker's very
+# first action is to dial Redis and Postgres over the internet. Wants= is the
+# required companion — After= alone expresses ordering without pulling the
+# target in, so on a host where nothing else wants it the ordering is against a
+# unit that never runs.
+After=network-online.target
+Wants=network-online.target
+
+# RESTART RATE LIMIT. These two belong in [Unit], not [Service] — systemd moved
+# them in v229 and silently ignores them in the wrong section, which is the
+# usual reason a "rate limited" unit still spins.
+#
+# Five starts per five minutes, then systemd stops trying and leaves the unit in
+# `failed`. This is the brake on the one loop worth fearing: a misconfiguration
+# makes the process exit 1 immediately, so without a limit it would restart
+# forever at RestartSec intervals and bury the real message in a scrolling
+# journal. With it, the operator gets five identical, legible errors and a red
+# `systemctl status`.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+# NOT root. The worker needs no privileged port, no package installation and no
+# access to another user's files. Create this account with no login shell — see
+# the deployment guide.
+User=placement
+Group=placement
+
+WorkingDirectory=/opt/placement-tracker/backend
+
+# Secrets live here, NEVER in this unit file. Unit files are world-readable in
+# /etc/systemd/system; this file should be 0640 root:placement.
+#
+# Note the syntax difference from the repository's .env: systemd's
+# EnvironmentFile is not dotenv. It does not accept `export`, it does not expand
+# variables, and a literal `$` must be written `$$`. Keep values unquoted unless
+# they contain spaces.
+EnvironmentFile=/etc/placement-tracker/worker.env
+
+# DEFENSIVE, and deliberately placed AFTER EnvironmentFile so it wins. systemd
+# applies these directives in the order written.
+#
+# `WORKER_EXIT_WHEN_DRAINED=true` turns the worker into a batch process that
+# exits as soon as the queue is empty. Combined with `Restart=`, that would make
+# systemd restart it seconds later, forever — a hot loop that reconnects to
+# Redis and Postgres every few seconds and trips the start limit. Since the same
+# worker.env may be copied from, or shared with, a drain invocation, the value
+# is pinned empty here rather than assumed absent.
+Environment=WORKER_EXIT_WHEN_DRAINED=
+
+ExecStart=/usr/bin/node dist/src/workers/email.worker.js
+
+# on-failure, not always. A deliberate `systemctl stop` and the graceful signal
+# path both end in exit 0, and neither should be undone by a restart. An
+# unexpected crash — an OOM kill, an uncaught fault — is non-zero and is
+# retried.
+Restart=on-failure
+RestartSec=10
+
+# THE GRACEFUL STOP CONTRACT, and the half of it systemd owns.
+#
+# The worker installs a SIGTERM handler that stops accepting new jobs, waits for
+# the ACTIVE job to finish, closes Redis and exits 0. systemd's job is to send
+# that signal and then wait long enough for it to mean something. When
+# TimeoutStopSec expires systemd sends SIGKILL, which abandons the job mid-flight
+# while it still holds its Redis lock — the exact failure the handler exists to
+# prevent, since BullMQ then waits out lockDuration, replays the job, and fails
+# it permanently if that happens twice (maxStalledCount defaults to 1).
+#
+# 90s is well above a realistic email job: extraction is regex plus, when
+# USE_AI=true, one OpenAI call.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# Names the unit's lines in the journal, so `journalctl -t placement-email-worker`
+# works and the two workers stay distinguishable when following both.
+SyslogIdentifier=placement-email-worker
+
+# --- Hardening --------------------------------------------------------------
+# The worker reads code and talks to the network. It writes nothing to disk, so
+# the filesystem can be closed off almost entirely.
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+
+# The email worker persists everything through Postgres and Redis and opens no
+# file for writing. ProtectSystem=strict already makes /usr and /etc read-only;
+# this makes the rest of the tree read-only too, so there is no ReadWritePaths
+# below. The attachment worker's unit differs here — it does write files.
+ProtectProc=invisible
+
+[Install]
+WantedBy=multi-user.target

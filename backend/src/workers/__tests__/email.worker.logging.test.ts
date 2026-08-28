@@ -193,6 +193,26 @@ describe("the worker publishes no email content and no raw errors", () => {
 
     delete process.env.WORKER_EXIT_WHEN_DRAINED;
 
+    // PR-10A. The worker now refuses to start when its required configuration is
+    // absent, and that check runs as the module's first statement — before the
+    // `Worker` these tests reach through is ever constructed. `process.exit` is
+    // spied to a no-op below, so a missing variable would NOT stop the import;
+    // it would let a half-initialised module continue and fail somewhere less
+    // obvious. Supplying the names keeps every test here about redaction.
+    //
+    // Values are inert placeholders, never reached: `redis` and the queue are
+    // mocked, so nothing parses or dials either of these. They are also the
+    // reason this suite's own assertion still means something — neither string
+    // appears in any expected log line.
+    process.env.DATABASE_URL = "postgresql://test/test";
+    process.env.REDIS_URL = "redis://test";
+
+    // Not set, so `resolveRequiredEnv` does not add OPENAI_API_KEY to the
+    // requirement list. Cleared rather than assumed absent: `USE_AI` is
+    // process-wide and another suite in the same worker may have set it.
+    delete process.env.USE_AI;
+
+
     process.removeAllListeners("SIGTERM");
     process.removeAllListeners("SIGINT");
 

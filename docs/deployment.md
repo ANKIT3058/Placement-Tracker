@@ -839,6 +839,17 @@ The section to read when something is wrong in production. Everything above
 describes how to *deploy*; this describes what is *executing* afterwards, and how
 to operate it.
 
+> [!IMPORTANT]
+> **Superseded in part by the Oracle VM deployment.** This section describes the
+> runtime as it was when GitHub Actions was the *only* consumer of either queue.
+> Both workers now run continuously under systemd on an Oracle Cloud VM, and the
+> workflows are maintenance tools rather than the normal runtime — see
+> [`oracle-worker-deployment.md`](./oracle-worker-deployment.md).
+>
+> Everything below about the WEB SERVICE remains exactly true: the Gmail
+> scheduler and both reconcilers still run inside the Render process, and still
+> only produce. What changed is that something is now always consuming.
+
 ## 11.1 Two runtimes, and only one of them is always on
 
 ```
@@ -893,8 +904,10 @@ Both run **inside the web process**. Both are producers.
 
 ## 11.3 The GitHub Actions drain
 
-`.github/workflows/production-worker.yml`. The entire production background
-runtime.
+`.github/workflows/production-worker.yml`. Formerly the entire production
+background runtime; now a maintenance path, for draining a backlog when the
+Oracle VM is down or being rebuilt. The workflow itself is unchanged, and
+everything below still describes it accurately.
 
 ```
   workflow_dispatch  (manual — no schedule, no push, no pull_request trigger)

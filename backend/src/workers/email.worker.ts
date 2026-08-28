@@ -8,6 +8,29 @@ import type { EmailJobData } from "../modules/email/email.types.js";
 import type { OwnershipContext } from "../modules/auth/tenant-context.js";
 import { Prisma } from "../../generated/prisma/client.js";
 import { emailQueue } from "../infrastructure/queue/queues.js";
+import {
+  assertWorkerEnv,
+  EMAIL_WORKER_REQUIRED_ENV,
+} from "../shared/config/worker-env.js";
+
+// FAIL FAST ON A MISCONFIGURED PROCESS (PR-10A).
+//
+// THE FIRST STATEMENT THIS MODULE EXECUTES, and that placement is the whole
+// point: everything below it — the `Worker`, the signal handlers, the drain
+// check — presumes a reachable Redis and a reachable database. Running the
+// check here means a misconfigured process dies before it constructs any of
+// them.
+//
+// The imports above have already run, so `redis.ts` has already built its
+// ioredis client and begun dialling. That is harmless and is not worth
+// restructuring the module graph to avoid: the connection attempt is
+// asynchronous, so `process.exit(1)` below runs in this same tick, before any
+// socket callback can fire. The client is created and the process is gone.
+//
+// This replaces the GitHub Actions "Verify credentials are present" step for
+// runtimes that have no workflow around them — see `shared/config/worker-env.ts`
+// for what each missing variable actually does without it.
+assertWorkerEnv("email-worker", EMAIL_WORKER_REQUIRED_ENV);
 
 // BATCH MODE (PR-9K).
 //
@@ -104,6 +127,36 @@ worker.on("failed", (job, err) => {
     emailId: (job?.data as EmailJobData | undefined)?.emailId,
     attempts: job?.attemptsMade,
     reason: err.message,
+  });
+});
+
+// WORKER-LEVEL ERRORS (PR-10A).
+//
+// `failed` above is per-JOB. This is the channel for everything that goes wrong
+// AROUND a job: a lock that could not be renewed, a reconnect that did not take,
+// the internal `run()` loop rejecting. On a process meant to stay up for weeks
+// these are the errors that actually show up, and until now nothing listened for
+// them.
+//
+// Not listening was not fatal, and it is worth being precise about why, because
+// the usual EventEmitter rule says it should have been. `QueueBase` overrides
+// `emit` and wraps `super.emit` in a try/catch; when no `error` listener exists,
+// Node's unhandled-'error' throw is caught by that wrapper, re-emitted, caught
+// again, and finally dumped with a bare `console.error(err)`. So the process
+// survived — but the surviving path prints the RAW error object, which is the
+// one thing PR-9L established this codebase does not do. A gaxios error carries
+// the full request config and headers; a pg error carries the failing statement
+// and its parameters.
+//
+// This handler exists to take that path away: the same events, reduced to safe
+// scalars, on the convention the rest of the file already uses. It logs and
+// returns — deliberately NOT a shutdown trigger. These conditions are transient
+// by nature, ioredis reconnects on its own, and BullMQ's stalled-job checker
+// recovers a job whose lock lapsed. Exiting here would turn a recoverable blip
+// into a restart.
+worker.on("error", (err) => {
+  console.error("Worker error", {
+    reason: err instanceof Error ? err.message : String(err),
   });
 });
 
