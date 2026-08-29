@@ -136,7 +136,7 @@ Full detail: [DANGEROUS-RESUME-CLAIMS.md](DANGEROUS-RESUME-CLAIMS.md)
 11. Why Postgres over Mongo? → *the correctness rests on constraints the DB enforces*
 12. Why does composite index order matter? → *leftmost-prefix rule; that's why every index leads with userId*
 13. How is multi-tenancy enforced? → *required parameter + scoped query shape + composite FKs*
-14. Is your OAuth callback CSRF-protected? → *No — `state` is missing. My top fix.*
+14. Is your OAuth callback CSRF-protected? → *Yes — `state` + PKCE S256, 10-min TTL, consumed before the token exchange. Writes also carry a double-submit CSRF token.*
 15. Why sessions and not JWTs? → *revocation on the next request, not the next login*
 
 ---
@@ -154,14 +154,15 @@ Full detail: [DANGEROUS-RESUME-CLAIMS.md](DANGEROUS-RESUME-CLAIMS.md)
 6. Job options: `attempts: 3`, exponential backoff from **2000 ms**, `removeOnFail: false`;
    attachment jobs use `jobId: attachment-<id>`
 7. Sessions: **7-day rolling idle**, **30-day absolute** ceiling
-8. Gmail scheduler: **120000 ms**; full sync `maxResults: 100` **unpaginated**; incremental **is**
-   paginated
-9. Tests: **125 declarations · 11 suites · ~214 at runtime**
+8. Gmail scheduler: **120000 ms**; **both** full sync and incremental sync are **paginated**
+   on `nextPageToken` (`maxResults` is a per-page limit); email reconciler **60 s / 5 min**,
+   attachment reconciler **60 s / 15 min / 100 rows**
+9. Tests: backend **52 suites · 1038 tests** (Jest), client **18 files · 331 tests** (Vitest) — 1369 total, all passing
 10. Model: **`gpt-4o-mini`, temperature 0**, `USE_AI=false` by default
 
 ---
 
-## 5 things I must NEVER falsely claim
+## 6 things I must NEVER falsely claim
 
 1. 🔴 **"Exactly-once processing."** It's at-least-once. Say idempotent instead.
 2. 🔴 **"Collaborative real-time code editing in CodeSync."** Local React state. Correct it
@@ -171,9 +172,18 @@ Full detail: [DANGEROUS-RESUME-CLAIMS.md](DANGEROUS-RESUME-CLAIMS.md)
    *authority*.
 5. 🔴 **"Concurrent updates are safe / the transaction handles it."** No locking, no version
    column. A transaction gives atomicity, not mutual exclusion.
+6. 🔴 **"The background worker runs in production."** It does not run *continuously*. Both
+   workers are executed as **manually dispatched GitHub Actions drains**. Say: *"the queue
+   architecture runs continuously and produces durable jobs; the consumer has no permanent
+   host yet."* → [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md)
 
-**Also don't claim:** the app is containerised · refresh tokens are encrypted · the OAuth
-callback has CSRF protection · you built the Judge0 sandbox.
+**Also don't claim:** the app is containerised · refresh tokens are encrypted · the systemd
+units are installed anywhere · Document Intelligence has ever run in production · you built
+the Judge0 sandbox.
+
+**And stop claiming these *gaps* — they were closed:** the OAuth callback has no `state`
+(it has `state` + PKCE) · there is no sweeper for `pending` emails (there are two
+reconcilers) · nothing consumes `attachment-processing` (a manual drain does).
 
 ---
 

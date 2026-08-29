@@ -228,24 +228,125 @@ Current logs are metadata only: account email, sync mode, message counts, job id
 **One-line takeaway:** treat OAuth tokens like passwords. They belong in logs, commits,
 screenshots and documentation exactly as often as a password does — never.
 
+## Login CSRF: `state` + PKCE on the OAuth flow
+
+🕘 **This chapter used to list "the `state` parameter is missing" as the single
+highest-priority fix. It has been implemented.** If you have practised the old answer,
+unlearn it — claiming a gap you have since closed is as wrong as claiming a feature you never
+built.
+
+`gmailAuthController` generates two secrets per flow and stores both on the anonymous session
+before redirecting:
+
+| Value | Sent to Google | Kept server-side | Purpose |
+|---|---|---|---|
+| `state` — 32 random bytes, base64url | yes | yes, to compare | Binds the authorization response to the browser that started the flow |
+| `codeVerifier` — 32 random bytes | **no** | yes | The PKCE secret |
+| `codeChallenge` = SHA-256(verifier) | yes | — | `code_challenge_method: S256`, never `plain` |
+
+The session is saved **before** the redirect, not after: `saveUninitialized: false` means an
+anonymous session is not written unless it is saved explicitly, so redirecting first would
+send the browser to Google carrying no cookie and leave the callback with nothing to compare
+against — every login would fail closed.
+
+`readPendingOAuth` in the callback then checks, in order: a `state` was supplied; a flow is
+actually open for this session; it has not passed its **10-minute TTL** (deliberately
+independent of the session's own lifetime); and the supplied value equals the stored one.
+**One answer for every failure** — missing, mismatched, expired, replayed — because naming
+which one failed tells an attacker which half of their guess was right. The state is then
+**consumed and persisted before** the token exchange, so a replay arriving mid-exchange does
+not find it live.
+
+The attack this closes is specific: without it, the endpoint would establish a session from
+any valid authorization code — including one an attacker obtained for *their own* Google
+identity and then induced a victim to visit, which hands the victim's browser a session for
+the attacker's tenant. The code is genuine and the identity verifies in that scenario; the
+only thing wrong is that it is not the end of a flow this browser started.
+
+**Two notes for the follow-up questions:**
+
+- **PKCE here is not "because the client cannot hold a secret".** This is a confidential
+  client and it does hold one. PKCE is defence in depth on the authorization code itself — an
+  intercepted code is useless without the verifier that never left the server. (If you have
+  practised "PKCE is for public clients, which isn't my case", that answer is now wrong about
+  this codebase.)
+- `GET /gmail/auth` and `GET /gmail/callback` are the only routes exempt from `requireCsrf`,
+  deliberately: the browser arrives at the callback as a top-level navigation *from Google*,
+  with no application code running to attach a header. They carry `state` and PKCE instead —
+  the protection appropriate to that leg of the flow.
+
+## Application CSRF: double-submit cookie
+
+`SameSite=Lax` on the session cookie was, for a while, the only thing refusing a cross-site
+state-changing request — and it lives in the *browser*, not in this application. One change
+to `SameSite=None` (the usual "fix" for a cross-origin problem) would have removed the entire
+defence with no test failing.
+
+So there is now a control the codebase owns:
+
+```
+server:  ensureCsrfCookie   → sets `placement.csrf`, a READABLE cookie (httpOnly: false)
+client:  api/http.ts        → echoes it in the `X-CSRF-Token` header
+server:  requireCsrf        → compares the two, exact equality
+```
+
+**`httpOnly: false` is the mechanism, not an oversight.** A token the page cannot read cannot
+be double-submitted. It is safe to expose precisely because it grants nothing on its own —
+unlike `placement.sid`, which stays HttpOnly. An attacker page can *cause* a request and the
+browser will attach cookies, but it cannot **read** the cookie to echo it (different origin)
+and cannot set the header without a preflight CORS refuses.
+
+Three design points worth being able to defend:
+
+1. **No server-side storage.** That is the defining property of double-submit: the cookie
+   *is* the expected value, so the comparison is self-contained. It touches neither Redis nor
+   Prisma, and the token is deliberately independent of `placement.sid` — it authenticates
+   nothing and identifies no one.
+2. **Issuance and validation are separate middlewares.** `ensureCsrfCookie` is global and
+   never rejects anything; `requireCsrf` is mounted per route, on writes only, and **after**
+   `requireAuth`. Combining them breaks two things at once — a signed-out visitor could never
+   obtain a token, and a signed-out POST would answer 403 "bad token" where the honest answer
+   is 401 "sign in".
+3. **The token is stable, not rotated per request.** Rotating would race the frontend: a
+   token read before one request would already be stale by the next, and two concurrent
+   requests from one page would invalidate each other.
+
+Reads are exempt because they change nothing — a cross-site GET a forgery can cause still
+returns its response to an origin that cannot read it.
+
+`POST /auth/logout` is the one route with `requireCsrf` and **no** `requireAuth`: logout is
+deliberately unauthenticated and idempotent — "you are now logged out" is true either way,
+and answering 401 would report whether the presented cookie was valid. A forced logout is
+still a real, if minor, cross-site attack, so the token check stands alone there.
+
+Chosen ahead of `Origin` validation because it is deployment-independent: it could not be
+established that `Origin` survives the Vercel → Render rewrite, and a control that fails
+closed on an unverified assumption would break every write the moment it deployed. Cookies
+and headers demonstrably survive that hop — the session cookie already does.
+
 ## Known security gaps (state them; don't hide them)
 
-1. **The OAuth `state` parameter is missing.** `generateAuthUrl` doesn't set one and the
-   callback doesn't verify one. That was tolerable while the callback issued nothing; now that
-   it issues a session it's a **live CSRF hole** — an attacker can trick a victim's browser
-   into completing an OAuth flow the attacker started. The code says this about itself, which
-   is the right way to carry a known gap. **This is the single highest-priority fix.**
-2. **Refresh tokens are stored in plaintext.** Should be encrypted at rest with a key from a
-   KMS/secret manager. Database access currently equals mailbox access.
-3. **No rate limiting** on any route.
-4. **`POST /email` (manual ingestion) still exists in production.** It's authenticated, but
-   RFC-001 §15.2 says it should be "removed, or restricted to non-production."
-5. **`@bull-board` is a dependency but I can't find it mounted** in `app.ts`. If it ever is,
-   it must be behind auth — it exposes and can mutate every job.
+1. **Refresh tokens are stored in plaintext** on `GmailAccount`. They should be encrypted at
+   rest with a key from a KMS or secret manager. **Database access currently equals mailbox
+   access.** This is now the highest-priority security gap.
+2. **No rate limiting** on any route.
+3. **`POST /email` (manual ingestion) still exists in production.** It is authenticated and
+   CSRF-checked, but RFC-001 §15.2 says it should be "removed, or restricted to
+   non-production."
+4. **`@bull-board` is a dependency and is mounted nowhere** in `app.ts` — verified by search.
+   If it ever is, it must be behind auth: it exposes and can mutate every job.
+5. **Secret rotation is built but never exercised.** `SESSION_SECRET` accepts a
+   comma-separated list and express-session signs with the first and verifies with all — the
+   mechanism exists, it has never been used in anger.
 
 ---
 
 # Part 5 — Deployment
+
+> **[ch. 15 — Runtime and Deployment](15-RUNTIME-AND-DEPLOYMENT.md) is the authoritative
+> chapter on what is actually running.** This part covers the web-tier topology and the
+> origin rule; ch. 15 covers the worker runtime, the manual drain workflows, and what
+> production deployment would require.
 
 ## The topology
 
@@ -253,21 +354,37 @@ screenshots and documentation exactly as often as a password does — never.
         BROWSER  —  ONE origin for everything
              │
              ▼
-   VERCEL   <project>.vercel.app
+   VERCEL   <project>.vercel.app                         ← always on
      /            → React 19 + Vite static build
      /assets/*    → static
      /api/:path*  → REWRITE to Render, /api stripped
              │
              ▼
-   RENDER   <service>.onrender.com
-     Express 5 (Node, ESM), rootDir: backend
+   RENDER   <service>.onrender.com                       ← always on
+     node dist/src/server.js  (Express 5, Node ESM, rootDir: backend)
+       ├─ HTTP API
+       ├─ Gmail scheduler        120 s   ┐
+       ├─ Email reconciler        60 s   ├─ all PRODUCERS
+       └─ Attachment reconciler   60 s   ┘
+     Consumes no queue.
              │
       ┌──────┴──────┐
       ▼             ▼
-  REDIS (Upstash)   POSTGRES (Neon)
-  sess:*  sessions  pooled → runtime
-  bull:*  queues    direct → migrate
+  REDIS             POSTGRES (Neon)
+  sess:*  sessions  pooled → runtime (Prisma adapter)
+  bull:*  queues    direct → migrate (applied by hand, from a workstation)
+      ▲
+      │  consumed only when a human dispatches a drain
+      │
+  GITHUB ACTIONS — workflow_dispatch, required reviewer          ← NOT always on
+    production-worker.yml            → email.worker.js
+    production-attachment-worker.yml → attachment.worker.js
 ```
+
+**The distinction that matters operationally:** *"the application server is running"* and
+*"background work is being processed"* are separate facts here, and the first does not imply
+the second. A healthy `/health`, a growing `bull:email-processing:wait` list and no new
+Events is therefore the **expected steady state between drains**, not a malfunction.
 
 ## The one rule that matters
 
@@ -348,14 +465,35 @@ sees http on the internal hop and would refuse to send a `Secure` cookie. Trusti
 hop lets it read `X-Forwarded-Proto`. Trusting the header when nothing strips it would let a
 client claim its own protocol and address — hence production-only.
 
+## What recovery does exist
+
+Two sweeps run **in the always-on API process**, each on its own timer, and together they are
+the mitigation for the Postgres/Redis dual-write gap:
+
+| Sweep | Every | Selects | Bound |
+|---|---|---|---|
+| `reconcilePendingEmails` | 60 s | `pending` Emails older than 5 min | none needed — an orphan requires a failed enqueue, so it normally finds nothing |
+| `reconcileOrphanedAttachments` | 60 s | `pending`/`processing` attachments, **or** `completed` ones with both parse columns NULL, older than 15 min | 100 rows per sweep |
+
+Both are **deliberately blind to Redis**: no `getJob`, no check-then-enqueue. The
+deterministic jobId is the concurrency authority and BullMQ resolves the race inside `add`
+itself; asking Redis first would race the exact window the check was meant to close. Neither
+sweep writes `processingStatus` — that lifecycle belongs to the worker, and a second writer
+would make it ambiguous.
+
 ## Operations gaps (honest list)
 
 - **No structured logging.** Everything is `console.log`, unaggregated. On Render you read the
   live log stream.
 - **No metrics, no alerting, no tracing.**
-- **No retry/backlog job** for emails stuck at `pending` (e.g. if Redis was down at enqueue
-  time). `getPendingEmails` / `getFailedEmails` exist in the repository and are already
-  tenant-scoped, but nothing calls them.
+- **Failed jobs are retained but never triaged.** `removeOnFail: false` keeps every failed
+  job permanently, which is deliberate — it keeps the evidence. But combined with a
+  deterministic jobId it means a permanently-failed job **occupies its own id forever**, so no
+  reconciler can re-enqueue that email. `getFailedEmails` exists and is tenant-scoped, and
+  nothing calls it. `backend/scripts/recovery/retry-failed-attachments.ts` closes this for
+  attachments only; there is no email equivalent.
+- **The workers have no permanent host.** The largest operational gap in the system, and it
+  gets its own chapter — [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md).
 - **Attachment storage is the local filesystem**, which is ephemeral on Render — files don't
   survive a redeploy. The `StorageService` interface exists so S3 is a one-line swap.
 - **The Gmail scheduler is in-process.** Two API instances means two schedulers, and it uses a

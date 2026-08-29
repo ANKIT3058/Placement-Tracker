@@ -1,6 +1,9 @@
 # 10 — Testing
 
-Source: `backend/jest.config.cjs` and everything under `src/**/__tests__/`.
+Source: `backend/jest.config.cjs` and everything under `src/**/__tests__/` and
+`scripts/**/__tests__/` — plus a separate frontend suite on **Vitest** + Testing Library under
+`client/src/**/__tests__/` (18 files, 331 tests), which covers the dashboard's auth handling,
+temporal grouping, review flow and the CSRF header on the HTTP client.
 All ✅ **Current** unless tagged.
 
 ---
@@ -38,8 +41,13 @@ parametrized `.each` suites and generated loops expand.
 | `gmail/__tests__/gmail.service.test.ts` | `parseMessage` attachment discovery in nested MIME. 3 tests. |
 | `__tests__/email.api.test.ts` | The one HTTP-level test: `POST /email` returns 202 / 400. 2 tests. |
 
-> The README says "7 suites, 115 tests" — that's stale. Count the files if you want a number,
-> or just say "around a dozen suites, mostly around matching and extraction."
+> **The real numbers, verified by running both suites:** backend **52 Jest suites, 1038
+> tests**; frontend **18 Vitest files, 331 tests** — 1369 in total, all passing. The table
+> above lists the ones worth *talking about*, not all of them.
+>
+> Say the number only if asked. What earns credit is the second sentence: *"none of them need
+> a database or a Redis — `lib/prisma` has a manual mock whose `$transaction` invokes the
+> callback with the same mock as `tx`, so transactional code paths actually execute."*"
 
 ---
 

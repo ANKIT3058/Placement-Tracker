@@ -190,7 +190,7 @@ clients that can't hold a secret — a SPA or a mobile app — and I have a back
 "Is your callback protected against CSRF?"
 
 ### What I should NOT say
-Guess at PKCE's purpose. If unsure, say "PKCE is for clients that can't keep a secret" and stop.
+Say PKCE isn't used here — it is. It's S256, on top of `state`, as defence in depth on the code itself.
 
 ---
 
@@ -199,9 +199,15 @@ Guess at PKCE's purpose. If unsure, say "PKCE is for clients that can't keep a s
 "Is your OAuth callback protected against CSRF?"
 
 ### What a strong answer should contain
-**Be honest.** "No — the `state` parameter is missing. It was tolerable while the callback issued
-nothing, but it now creates a session, so it's a live gap and it's my top fix. The mitigation is a
-signed single-use `state` tied to the session and verified on return."
+**It is protected — and this answer changed.** "Yes. A 32-byte random `state` stored on the
+anonymous session and compared on return, with a 10-minute TTL and single-use consumption
+before the token exchange, plus PKCE S256. Without it the callback would establish a session
+from any valid authorization code, including one an attacker obtained for their own identity."
+
+🕘 *The old answer below is what this doc used to say. It is no longer true — do not give it.*
+
+> *(Superseded)* "No — the `state` parameter is missing. It was tolerable while the callback
+> issued nothing, but it now creates a session, so it's a live gap and it's my top fix."
 
 ### Follow-up
 "What would you use for the state value?"
@@ -591,7 +597,9 @@ authenticated channel.
 
 ### What a strong answer should contain
 **They will find this. Own it.** "Then the email row exists at `pending` and no job exists —
-that's the dual-write problem and I have it. There's no sweeper picking those up. The clean fix
+that's the dual-write problem and I have it. A reconciler in the API process sweeps `pending`
+rows older than five minutes and re-enqueues them, which is safe because the job id is derived
+from the row. The fuller fix
 is a transactional outbox: write the job into an outbox table in the *same* transaction as the
 email, and have a relay process move outbox rows to Redis. Then the worst case is delayed
 delivery instead of lost work."
@@ -697,7 +705,7 @@ appear in the input text."
 "Your resume says 120 automated tests on 50+ real emails. Tell me about that."
 
 ### What a strong answer should contain
-125 test declarations across 11 suites, about 214 at runtime because several are parametrized.
+1038 backend tests across 52 Jest suites, and 331 client tests across 18 Vitest files.
 Almost all unit tests with mocked dependencies plus one supertest integration test — no database,
 Redis or API key needed.
 

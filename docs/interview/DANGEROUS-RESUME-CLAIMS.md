@@ -228,7 +228,7 @@ paginated.
 **Expects:** a real number, real types, and knowing what they assert.
 
 **Short answer:**
-> "125 test declarations across 11 suites, about 214 at runtime because several are
+> "1038 backend tests across 52 Jest suites and 331 client tests across 18 Vitest files, because several are
 > parametrized. Almost all unit tests with dependencies mocked, plus one integration test with
 > supertest. No database or Redis needed to run them."
 
@@ -277,7 +277,9 @@ That's a *better* answer than "yes I use JWT."
 # 🟢 GREEN — safe, but expect depth
 
 ## 19. "OAuth 2.0"
-Fully implemented. **One gap to pre-empt: the `state` parameter is missing.** If asked about
+Fully implemented, including `state` and PKCE S256 on the authorization flow. 🕘 *This entry
+used to warn that `state` was missing; it no longer is — don't volunteer a gap you closed.*
+**The gap worth pre-empting now: refresh tokens are stored in plaintext.** If asked about
 CSRF on the callback, say so — it's documented in the code's own comments, and owning it reads
 as rigour.
 

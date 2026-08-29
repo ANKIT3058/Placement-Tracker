@@ -144,7 +144,8 @@ emails.
 
 **What I'd improve next.** Nothing about the mechanism. What's missing is a **sweeper** for
 emails stuck at `pending` when Redis was down at enqueue time. `getPendingEmails` and
-`getFailedEmails` already exist, tenant-scoped, and nothing calls them.
+`getFailedEmails` already exist, tenant-scoped, and nothing calls them. (`getStalePendingEmails`
+is the one that *is* called — by `reconcilePendingEmails`, every 60 s.)
 
 **Never say "exactly-once".** The correct phrasing: *"the system is designed to tolerate
 duplicate processing rather than to prevent it."*

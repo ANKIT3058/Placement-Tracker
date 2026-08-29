@@ -128,7 +128,7 @@ JOIN with a GROUP BY and a HAVING tonight if you're rusty.
 | Persistence | RDB (periodic snapshot) vs AOF (append-only log). RDB can lose recent writes; AOF is slower but durable. |
 | **Eviction policy** | `noeviction` vs `allkeys-lru`. **BullMQ requires `noeviction` — an evicted job key is a silently lost job.** A session store is commonly LRU. Applied to the queue instance, LRU destroys jobs. That's the structural reason for two clients. |
 | TTL | Sessions expire by TTL; `connect-redis` derives the key TTL from the cookie `maxAge`, and `rolling: true` refreshes it on every response. |
-| Failure | Enqueue throws → the email stays `pending` with no job, and there's no sweeper. The API refuses to start if the session store is unreachable. |
+| Failure | Enqueue throws → the email stays `pending` with no job → `reconcilePendingEmails` re-enqueues it after 5 minutes, on its own timer in the API process. Safe because `jobId` is derived from the row, so a duplicate `add` collapses into the existing job. The API refuses to start if the session store is unreachable. |
 | Why two client libraries | connect-redis v10 issues node-redis command signatures; with ioredis the SET reached Redis as `SET key value [object Object]` and the store **silently never wrote a session**. |
 
 ---
@@ -157,14 +157,14 @@ JOIN with a GROUP BY and a HAVING tonight if you're rusty.
 | **Authentication vs authorization** | Authentication = who you are (the ID token). Authorization = what you may access (the access token + scopes). OAuth 2.0 is an *authorization* framework; OpenID Connect layers authentication on top. |
 | Authorization code flow | Redirect → user consents → `code` back → **server-to-server** exchange with the client secret → tokens. The token never touches the browser. |
 | Why not implicit | Deprecated. Tokens in the URL fragment leak via history, referrers and logs. |
-| Why not PKCE here | PKCE is for public clients that can't hold a secret — SPAs, mobile. You have a backend that can. |
+| PKCE, and why it's here anyway | PKCE exists for public clients that can't hold a secret. You have a confidential client that can — and you use PKCE (S256) **as defence in depth on the code itself**: an intercepted authorization code is useless without the verifier that never left your server. Don't recite the old "not my case" line. |
 | Access token | Short-lived (~1 hour). **You never store it.** |
 | Refresh token | Long-lived, stored on `GmailAccount`, used to mint access tokens. **Store renewable credentials, not temporary ones.** |
 | Scopes | `openid` (returns an ID token), `userinfo.email`, `userinfo.profile`, `gmail.readonly`. Least privilege — you never send mail. |
 | `access_type: offline` | What makes Google return a refresh token. |
 | `prompt: consent` | Google only issues a refresh token on first authorization; re-authorizing silently returns only an access token. |
 | ID token verification | Signature against Google's keys, `aud`, `exp`, issuer allowlist, `sub`, `email_verified`. |
-| **The `state` parameter** | **Yours is missing.** It's a CSRF defence: a random value tied to the user's session, sent in the auth URL and verified on the callback. Know this and volunteer it. |
+| **The `state` parameter** | **Implemented.** 32 random bytes stored on the anonymous session, sent in the auth URL, compared on the callback, given a 10-minute TTL independent of the session's, and **consumed before the token exchange** so a replay arriving mid-exchange can't find it live. Every failure — missing, mismatched, expired, replayed — returns one indistinguishable answer. |
 
 ---
 
@@ -179,7 +179,7 @@ JOIN with a GROUP BY and a HAVING tonight if you're rusty.
 | `__Host-` prefix | Binds the cookie to the exact origin and `Path=/`. Browsers reject it if `Secure` is absent or `Domain` is set. |
 | Session fixation | `regenerate()` before writing to the session at login — an attacker's planted id stops existing. |
 | Idle vs absolute lifetime | 7-day rolling idle, 30-day hard ceiling. Idle-only means an actively-used session is immortal. |
-| CSRF | `SameSite=Lax` + POST-only state changes. **Gap: no `state` on the OAuth callback.** |
+| CSRF | Three layers: `SameSite=Lax`, POST-only state changes, and a **double-submit token** — `placement.csrf` is issued in a deliberately readable cookie and echoed in `X-CSRF-Token`; `requireCsrf` compares them on writes, mounted **after** `requireAuth` so a signed-out caller gets 401 rather than 403. The OAuth routes are exempt and carry `state` + PKCE instead. |
 | XSS | `httpOnly` limits the damage. No `dangerouslySetInnerHTML` anywhere. |
 | **The split-origin cookie problem** | *The origin that terminates the OAuth callback owns the session cookie.* Your production outage. |
 

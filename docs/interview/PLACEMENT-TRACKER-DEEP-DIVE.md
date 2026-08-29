@@ -176,7 +176,9 @@ Verified against the source. Every box below exists.
 - **What:** `enqueueEmailProcessing({ emailId, userId })`.
 - **Why:** decouples ingestion from processing.
 - **Can fail:** ⚠️ **if Redis is down the enqueue throws**, that message is counted failed, and
-  the Email sits at `pending` forever. There is no sweeper. Honest known gap.
+  the Email sits at `pending` with no job — the dual-write gap. `reconcilePendingEmails`
+  sweeps those rows every 60 s once they are older than 5 minutes and re-enqueues them
+  through the normal producer.
 - **Async:** this is the async boundary.
 
 ### Queue → worker → owner derivation
@@ -668,7 +670,7 @@ platform-configuration failure, not a code failure, and it's a good thing to be 
 | Account fetch fails | Caught; the interval survives |
 | Cursor expired | Automatic full-sync fallback |
 | Run overruns the interval | `isRunning` flag skips the next tick |
-| Redis down at enqueue | ⚠️ Email stays `pending`, no job, **no sweeper** — known gap |
+| Redis down at enqueue | Email stays `pending` with no job → **`reconcilePendingEmails` re-enqueues it after 5 min** |
 
 ---
 
@@ -905,7 +907,7 @@ Fully audited in [RESUME-DEFENSE-MAP.md §A8](RESUME-DEFENSE-MAP.md). Summary:
 Almost all unit tests with mocked dependencies; one integration test (`email.api.test.ts`,
 supertest against the real Express app). No database, Redis or API key needed.
 
-If asked "exactly 120?": *"125 declarations across 11 suites, more at runtime because several
+If asked for a number: *"1038 backend tests across 52 suites, 331 client tests across 18 files; more at runtime than declarations because several
 are parametrized. I rounded down."*
 
 ### The 50+ real emails — PARTIALLY CONFIRMED

@@ -119,12 +119,16 @@ is wrong. `gmail.readonly` because the system never needs to send or modify mail
 
 ### Deeper follow-up
 *"Is your callback protected against CSRF?"*
-> **Answer honestly:** "No — the `state` parameter is missing. That was tolerable while the
+> **This answer changed — the gap was closed.** "Yes: `state` plus PKCE S256, with a
+> 10-minute TTL and single-use consumption before the token exchange." 🕘 *The old answer,
+> below, is no longer true.*
+>
+> *(Superseded)* "No — the `state` parameter is missing. That was tolerable while the
 > callback issued nothing, but now that it creates a session it's a real gap, and it's my top
-> fix. The mitigation would be a signed, single-use `state` stored server-side and verified on
-> return."
+> fix."
 
-That honesty will score better than a bluff. The gap is documented in the code's own comments.
+The gap that *is* still open here, and the one worth volunteering instead: **the refresh
+token is stored in plaintext**, so database access equals mailbox access.
 
 ### Code I should know
 `generateAuthUrl`, `verifyGoogleIdToken`, `gmailCallbackController`, `connectGmailAccount`
@@ -485,7 +489,7 @@ The `prisma.$transaction` block in `updateEventService`; the `EventUpdate` model
 
 ### Claim 8a — "120 automated tests"
 
-**Where:** 11 suites under `backend/src/**/__tests__/`.
+**Where:** 52 Jest suites under `backend/src/**/__tests__/` and `backend/scripts/**/__tests__/`, plus 18 Vitest files under `client/src/**/__tests__/`.
 
 **The actual numbers, verified:**
 
@@ -512,7 +516,7 @@ Breakdown by suite (explicit → runtime):
 | `email.api.test.ts` | 2 | 2 |
 
 **Verdict: CONFIRMED BY CODE, and conservative.** 120 sits safely below both 125 and 214. If
-asked "is it exactly 120?" say: *"125 test declarations across 11 suites — more at runtime,
+asked for a number, say: *"1038 backend tests across 52 suites and 331 client tests across 18 files — more at runtime than declarations,
 because several are parametrized. I rounded down."*
 
 **Types:** almost entirely unit tests with dependencies mocked, plus one integration test
@@ -600,7 +604,7 @@ API, OAuth 2.0, OpenAI API, Jest, Docker."*
 | **Gmail API** | messages.list/get, history.list, getProfile, attachments.get, MIME walking | CONFIRMED |
 | **OAuth 2.0** | Full authorization-code flow + ID-token verification | CONFIRMED (see `state` gap) |
 | **OpenAI API** | `gpt-4o-mini`, behind a provider abstraction. **Off by default (`USE_AI=false`)** | **PARTIALLY CONFIRMED** — see below |
-| **Jest** | 11 suites, manual mocks, `requireActual` wrapping, parametrized suites | CONFIRMED |
+| **Jest** | 52 suites, manual mocks, `requireActual` wrapping, parametrized suites | CONFIRMED |
 | **Docker** | **`docker-compose.yml` runs Postgres only.** No app Dockerfile. | **PARTIALLY CONFIRMED** — see below |
 
 ## B1. OpenAI — the caveat
@@ -754,5 +758,5 @@ Nothing to defend in code. Top ~4%. Expect a DSA question to follow it — see
    exactly-once."*
 4. **Incremental sync:** *"Overlap is safe; gaps are not — so I capture the watermark before
    listing."*
-5. **Tests:** *"125 declarations across 11 suites, about 214 at runtime; the real emails drove
+5. **Tests:** *"1038 backend tests across 52 suites, 331 client tests across 18 files; the real emails drove
    the bugs, and the bugs became the tests."*

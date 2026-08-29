@@ -45,7 +45,9 @@ Everything listed here is implemented and exercised by the test suite.
 
 **Attachment processing** — attachments are enqueued after their email is processed, downloaded to opaque storage keys, and parsed by a MIME-routed registry (PDF, spreadsheets). Download and parsing are separate failure domains: a parse failure records an error without reverting the download.
 
-**Background processing** — two BullMQ queues (`email-processing`, `attachment-processing`) with dedicated worker processes, deterministic job IDs for idempotent enqueue, and exponential backoff retries.
+**Background processing** — two BullMQ queues (`email-processing`, `attachment-processing`) with dedicated worker processes, deterministic job IDs for idempotent enqueue, and exponential backoff retries. Each worker fails fast on a missing credential, shuts down gracefully on a signal (finishing its active job rather than abandoning its lock), and can run either as a permanent consumer or as a run-to-drain batch — the same compiled entrypoint, distinguished by one environment variable. **See [Deployment status](#deployment-status): the workers do not currently run continuously.**
+
+**Recovery from the dual-write gap** — a row is committed to PostgreSQL before its job is created in Redis, and the two stores cannot share a transaction. Two reconcilers in the API process sweep for work PostgreSQL still owes and re-enqueue it through the normal producer. They are deliberately blind to Redis: the deterministic job ID is the concurrency authority, so a duplicate enqueue collapses into the existing job.
 
 **Replaceable extraction** — deterministic regex patterns and an optional LLM path merge field-wise. The model is off by default (`USE_AI=false`); when enabled, a provider failure degrades silently to patterns rather than failing the message. A shared AI core owns the provider interface, retry policy, JSON parsing, and typed errors.
 
@@ -105,13 +107,13 @@ Two properties worth noticing: **the pipeline has exactly one write point** — 
 | Layer | Choices |
 |---|---|
 | **Backend** | Node.js · TypeScript (strict, ESM/NodeNext) · Express 5 |
-| **Database** | PostgreSQL 16 · Prisma 7 with `@prisma/adapter-pg` over a `pg` pool · 21 migrations |
+| **Database** | PostgreSQL 16 · Prisma 7 with `@prisma/adapter-pg` over a `pg` pool · 22 migrations |
 | **Queue** | BullMQ over Redis (ioredis) · two queues · two dedicated worker processes |
 | **AI** | OpenAI `gpt-4o-mini` at `temperature: 0`, behind a provider interface with retry policy and typed errors. Optional — the system runs on deterministic patterns alone |
 | **Ingestion** | Google APIs (`gmail.readonly`), OAuth 2.0 with offline access and refresh tokens |
 | **Documents** | `pdf-parse` · `exceljs`, routed by a MIME-type parser registry |
 | **Frontend** | React 19 · Vite 8 · TypeScript · hand-written CSS |
-| **Testing** | Jest 30 · ts-jest · supertest — 38 suites, 620 tests, dependency-mocked (no database or Redis required) |
+| **Testing** | Jest 30 · ts-jest · supertest — 52 suites, 1038 tests, dependency-mocked (no database or Redis required). Frontend: Vitest · Testing Library — 18 files, 331 tests |
 | **Infrastructure** | Docker Compose (PostgreSQL); Redis provisioned separately |
 | **Authentication** | Google OAuth sign-in (PKCE + state), server-side sessions, double-submit CSRF on writes. Separately, a Google OAuth grant per connected mailbox (`gmail.readonly`) |
 | **Multi-tenancy** | Every record carries its owner. Each user's Events, emails, attachments and mailboxes are isolated to their account, enforced at the persistence boundary rather than by callers remembering to filter |
@@ -215,6 +217,26 @@ Full setup contract — every environment variable, the `DATABASE_URL` resolutio
 
 ---
 
+## Deployment status
+
+Being explicit about this, because "it's deployed" is not one fact here:
+
+| | Where | State |
+|---|---|---|
+| Frontend | Vercel (static build, `/api/*` rewritten to the API so the browser sees one origin) | **Always on** |
+| API + Gmail scheduler + both reconcilers | Render, `node dist/src/server.js` | **Always on.** Produces queue jobs; consumes none |
+| PostgreSQL | Neon (pooled URL at runtime, direct URL for migrations, applied by hand) | **Always on** |
+| Redis | Queues (`bull:`) and sessions (`sess:`) | **Always on** |
+| `email-processing` worker | `.github/workflows/production-worker.yml` | ⏸ **Manually dispatched batch drain** — `workflow_dispatch` only, behind a required reviewer. Not scheduled, not triggered by a push |
+| `attachment-processing` worker | `.github/workflows/production-attachment-worker.yml` | ⏸ **Manually dispatched batch drain.** Ships no `USE_AI`, so Document Intelligence writes nothing in production |
+| Continuous worker host | `deploy/systemd/` + [`docs/oracle-worker-deployment.md`](docs/oracle-worker-deployment.md) | ⬜ **Written, not installed on any host** |
+
+**What this means in practice:** jobs are produced continuously and consumed only when a drain is dispatched. A healthy `/health`, a growing `bull:email-processing:wait` list and no new Events is the expected steady state between drains, not a malfunction. Nothing is lost — emails are committed before their jobs exist and job IDs are derived from the row — but processing latency is unbounded.
+
+**Closing the gap requires no code change:** run the same compiled entrypoint on a host that keeps a process alive, with `WORKER_EXIT_WHEN_DRAINED` unset.
+
+---
+
 ## Current Status
 
 Multi-user and owner-scoped, and correct on the paths the handbook specifies. Each user signs in with Google and sees only their own placement Events.
@@ -225,7 +247,8 @@ Multi-user and owner-scoped, and correct on the paths the handbook specifies. Ea
 - ✅ **Architecture Conformance (Phase 2)** — AC-1 bounded the weakest recognition tier in time; AC-2 implemented ADR-006's identity gate; AC-3 made human confirmation authoritative over inference; AC-4 stopped placeholder companies from becoming matchable events. Each shipped with regression tests
 - ✅ **Authentication & Multi-user Foundation (Phase 3)** — Google sign-in, ownership on the Event, and tenant isolation enforced at the persistence boundary. Deliberately deferred until the reconciliation problem was solved, then delivered as AC-5 under [RFC-001](docs/rfcs/RFC-001-authentication-multi-user-foundation.md). The Event's recognition key became unique per owner rather than globally, so two students receiving the same placement broadcast each keep their own Event
 - ⬜ **Frontend Evolution** — surface change history, confidence and doubt, and attachment understanding, none of which currently have a user-facing expression
-- ⬜ **Production Readiness** — CI, retained sync and adjudication statistics, recognition-quality measurement, credential revocation as a visible account state
+- ⏸ **Background execution** — both workers are implemented, hardened (fail-fast configuration, graceful shutdown, drain-and-exit) and running in production as **manually dispatched** GitHub Actions drains. Continuous worker hosting is not in place; see [Deployment status](#deployment-status)
+- ⬜ **Production Readiness** — CI, retained sync and adjudication statistics, recognition-quality measurement, credential revocation as a visible account state, structured logging, backlog-age alerting
 
 ---
 
@@ -233,7 +256,9 @@ Multi-user and owner-scoped, and correct on the paths the handbook specifies. Ea
 
 Realistic next phases, in roughly the order they matter.
 
-**Wire document intelligence into adjudication.** The classifier and the event/participant extractors are built and tested but invoked from no path — attachment processing currently terminates at parse and persist. This is the largest built-but-unused capability in the system, and the boundary is already drawn to accept it.
+**Give the workers a permanent host.** The single largest gap between what the system is and what it does. Everything else on this list is worth less until the queue has a continuous consumer.
+
+**Wire document intelligence into *adjudication*.** The classifier and extractors are invoked — attachment processing calls them after the parsed text is durable, gated on `USE_AI` — and the participant slice is consumed by `GET /user/shortlists`. What remains is the `eventInformation` slice: it is stored and read by nothing, so **no document has ever created or updated an Event**. The principle the boundary was drawn for still holds — a document must enter adjudication where an email enters, not through a private path to the database.
 
 **Eliminate the ingestion drop path.** A message that fails during sync is logged and dropped, with nothing durable recording that it existed. It is the one place the system's failure preference is violated: the outcome is *absent* with no signal.
 

@@ -478,6 +478,106 @@ event ids are sequential and trivially enumerable.
 
 ---
 
+## 11a. The dual-write gap, and the two sweeps that close it
+
+**Problem.** A row is committed to PostgreSQL and *then* a job is added to Redis. The two
+stores cannot share a transaction, so there is a window where the row exists and the job does
+not. Nothing recovered that state: the Gmail dedupe short-circuits every replay of the
+message, the sync watermark has already advanced past it, and a manually ingested email has
+no Gmail message to replay at all. **The email was stored and never processed, with nothing
+recording that anything had gone wrong.**
+
+This is the classic dual-write problem. Name it as such — and be equally clear that the
+proper fix (a transactional outbox: write the job intent into the same database transaction,
+and relay it to Redis afterwards) is **not** what this codebase does.
+
+**What it does instead:** two reconcilers, running on their own timers **inside the always-on
+API process**.
+
+| Sweep | Every | Selects | Bound |
+|---|---|---|---|
+| `reconcilePendingEmails` | 60 s | `processingStatus = pending` AND `createdAt < now − 5 min` | none |
+| `reconcileOrphanedAttachments` | 60 s | `pending`/`processing`, **or** `completed` with `parsedAt` and `parsingError` both NULL, AND `createdAt < now − 15 min` | 100 rows |
+
+Five design points, and each is a question an interviewer can pull on:
+
+**1. They are deliberately blind to Redis.** No `getJob`, no `getJobCounts`, no
+check-then-enqueue. A row stays `pending` until a worker picks it up, so a row whose enqueue
+*succeeded* is indistinguishable from an orphan — and that is fine, because
+`jobId: email-${id}` means BullMQ refuses a second `add` while a job with that id exists.
+**Checking Redis first would race the exact window the check was meant to close**, and would
+put a second, weaker answer beside the one the queue already enforces.
+
+**2. They write nothing.** `processingStatus`, `parsedAt` and `parsingError` belong to the
+worker. A row a sweep fails to enqueue is left exactly as it was, so it stays eligible for
+the next pass — the only durable record that the work is still owed. A second writer would
+make the lifecycle ambiguous.
+
+**3. The cutoff is the caller's, never computed inside.** How long to wait before treating a
+row as abandoned is a deployment decision — long enough to clear a normal backlog, short
+enough to matter. The 15-minute attachment cutoff is deliberately longer than the 5-minute
+email one: an email job is regex plus at most one API call; an attachment job is a Gmail
+download plus a full PDF or spreadsheet parse, at concurrency 1.
+
+**4. Getting the cutoff wrong is cheap in one direction only, and it is the safe one.** Too
+short wastes a little Redis traffic (the duplicate collapses into the existing job); too long
+delays recovery.
+
+**5. The attachment sweep is batch-bounded and the email sweep is not**, and the asymmetry is
+the point. An orphaned *email* requires a failed enqueue to exist at all, so that sweep
+normally finds nothing. The attachment queue currently holds a standing backlog of
+legitimately queued work — every row of which the recovery predicate deliberately
+over-selects — so unbounded it would attempt one Redis round trip per backlogged row every
+60 seconds. Rows beyond the bound stay eligible for the next sweep.
+
+### The state the attachment sweep exists for
+
+The third branch of its predicate — `completed` with both parse columns NULL — is the one
+that could not be reached any other way:
+
+```
+markAttachmentCompleted   ← commits after the DOWNLOAD, before the parse
+        ↓
+   ✗ worker killed here
+        ↓
+row reads "completed", nothing parsed, removeOnComplete deleted the job
+        ↓
+the normal enqueue filter (getPendingAttachmentsByEmailId) excludes "completed"
+        ↓
+NOTHING can reach this row
+```
+
+The reconciler then applies one filter the query cannot: it asks the **parser registry**
+whether this MIME type has a parser at all, and skips it if not. Without that, a completed
+download with no parser — which `isSettled` already considers finished — would be enqueued,
+no-op'd, completed, freeing the deterministic id, and re-selected on the very next sweep:
+**unbounded churn, forever, growing with the corpus.** The registry answers it because the
+registry is the single authority on MIME-to-parser routing; a MIME list in the recovery query
+would be a second one, free to drift.
+
+### The guarantee, stated exactly
+
+> **At-least-once recovery with convergent effects.** Not exactly-once — that is not
+> achievable across PostgreSQL and Redis, and it is not claimed anywhere in this repository.
+
+Convergence comes from three things that already exist: `isSettled` makes a replay *resume*
+rather than restart, `updateParsedResult` overwrites in place, and both
+`saveDocumentIntelligence` and `createExtraction` are upserts on database-enforced unique
+keys. **Two non-idempotent effects survive a duplicate run and are accepted:** a replay stores
+the file under a fresh UUID, orphaning the previous one, and it repeats the Document
+Intelligence call when `USE_AI=true`.
+
+### What this does NOT recover
+
+A job that exhausted its three attempts. `removeOnFail: false` retains the failed job
+permanently — which is right, it keeps the evidence — but combined with a deterministic jobId
+that means the job **occupies its own id forever**, so `add` is a silent no-op and no sweep
+can revive it. `backend/scripts/recovery/retry-failed-attachments.ts` is the one-off tool that
+closes this for attachments. There is no email equivalent. Volunteer this: it is the sharpest
+follow-up available on this section.
+
+---
+
 ## 12. Graceful, layered failure
 
 **Problem.** Where should each failure stop?
@@ -497,6 +597,11 @@ recoverable, never to **corruption**, which is neither.*
 | The update transaction fails | Nothing. Rolled back. |
 | Attachment download fails | That attachment. The email and its event are already done. |
 | Attachment parse fails | Only the parse columns. Download stays `completed`. |
+| Redis unreachable at enqueue | That row's job. The row is committed and stays `pending` → recovered by the reconciler after its cutoff (§11a). |
+| A required env var is missing at worker start | The whole process, on purpose. `assertWorkerEnv` prints the missing **names** — never values — and exits 1 before the Worker is constructed, because every alternative is a process that comes **up** and then misbehaves quietly. |
+| The worker receives SIGTERM/SIGINT | Nothing in flight. It stops accepting jobs, **waits for the active job**, closes Redis and exits 0. Never `close(true)`, which would abandon the running job — the precise outcome the handler exists to prevent. |
+| A worker-level error (lock lapse, failed reconnect) | Nothing. Logged as safe scalars and **not** a shutdown trigger: ioredis reconnects and BullMQ's stalled checker recovers a lapsed lock. Exiting would turn a recoverable blip into a restart. |
+| The worker is interrupted **twice** mid-job | That job, permanently. `maxStalledCount` defaults to 1, so the second stall fails it — and `removeOnFail: false` then keeps its deterministic id occupied. **The one place a failure is not recoverable by any sweep.** |
 
 **And crucially:** attachment processing runs *after* the email pipeline, so a failure in the
 expensive, external, slow part can never affect the event that was already correctly derived.

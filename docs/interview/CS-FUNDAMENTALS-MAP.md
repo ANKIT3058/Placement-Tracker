@@ -287,7 +287,9 @@ early and they'll follow.
 *"You write to Postgres and then enqueue to Redis. What if the enqueue fails?"* ← **they will
 find this**
 > Then the email row exists at `pending` and no job exists — it's the dual-write problem and I
-> have it. There's no sweeper picking those up, which is a real gap. The clean fix is a
+> have it. A reconciler sweeps `pending` rows older than five minutes and re-enqueues them
+> through the normal producer — safe because the job id is derived from the row, so a
+> duplicate `add` collapses into the existing job. The fuller fix is a
 > transactional outbox: write the job into an outbox table in the *same* transaction as the
 > email, and have a separate process relay outbox rows to Redis. Then the only failure mode is
 > delayed delivery rather than lost work.

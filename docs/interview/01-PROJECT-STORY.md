@@ -304,4 +304,11 @@ Only things this project actually forced:
 >
 > Around that: Gmail OAuth with a background incremental sync, BullMQ for processing, a
 > second queue for attachments, and multi-user isolation enforced with composite foreign
-> keys in Postgres. It's deployed on Vercel and Render."
+> keys in Postgres.
+>
+> On deployment, the honest version: the frontend is on Vercel and the API on Render, and
+> the API runs continuously — it polls Gmail and runs two reconcilers that repair anything
+> persisted but never queued. The queue **workers** have no permanent host yet; I drain each
+> queue by dispatching a GitHub Actions workflow by hand. That's a cost decision, and it's
+> one environment variable away from being a continuously running worker — the same compiled
+> entrypoint runs both ways."

@@ -137,9 +137,9 @@ venue regex.
 | **Redis** | Two clients (ioredis for BullMQ, node-redis for sessions), documented reasons | `infrastructure/redis/*` | ✅ CONFIRMED |
 | **BullMQ** | 2 queues, 2 workers, retries, backoff, deterministic jobIds, `UnrecoverableError` | `queues.ts`, `*.worker.ts` | ✅ CONFIRMED |
 | **Gmail API** | messages.list/get, history.list, getProfile, attachments.get, recursive MIME walk | `gmail.service.ts` | ✅ CONFIRMED |
-| **OAuth 2.0** | Full auth-code flow + ID-token verification. ⚠️ `state` parameter missing | `gmail.service.ts`, `gmail.controller.ts` | ✅ CONFIRMED (gap noted) |
+| **OAuth 2.0** | Full auth-code flow + ID-token verification + `state` + PKCE S256 | `gmail.service.ts`, `gmail.controller.ts` | ✅ CONFIRMED |
 | **OpenAI API** | `gpt-4o-mini` @ temp 0, behind a provider abstraction — **but `USE_AI=false` by default** | `extraction.service.ts`, `modules/ai/` | 🟡 **PARTIAL** |
-| **Jest** | 11 suites, manual mocks, `requireActual` wrapping, parametrized suites, documented config | `jest.config.cjs`, `__tests__/`, `__mocks__/` | ✅ CONFIRMED |
+| **Jest** | 52 suites / 1038 tests, manual mocks, `requireActual` wrapping, parametrized suites, documented config | `jest.config.cjs`, `__tests__/`, `__mocks__/` | ✅ CONFIRMED |
 | **Docker** | **`docker-compose.yml` runs `postgres:16` only.** No app Dockerfile, no Redis service | `backend/docker-compose.yml` | 🟡 **PARTIAL** |
 
 ### 🟡 OpenAI — how to frame it
@@ -272,7 +272,7 @@ caller is an interviewer on that interview."* Owning it reads as rigour.
 | **SQLite** | **Not found in either repo** | 🔴 NOT FOUND here (may be from other work — if it isn't, drop it) |
 | Git / GitHub | Real history, PRs, feature branches | ✅ |
 | **Docker** | Postgres compose only | 🟡 PARTIAL |
-| Jest | 11 suites | ✅ |
+| Jest | 52 suites, 1038 tests | ✅ |
 | Linux CLI / Bash | `scripts/fix-esm-imports.js`, npm scripts, migration tooling | 🟡 PARTIAL — real but light |
 | **OAuth 2.0** | Full Google flow | ✅ |
 | **Clerk** | CodeSync | ✅ |
@@ -325,5 +325,5 @@ CodeSync video + Judge0 execution + Clerk.
 2. **Judge0 API key hardcoded and client-side** — rotate it.
 3. **SQLite** on the skills list — no evidence in either repo. Drop it unless it's from
    elsewhere.
-4. **OAuth `state` parameter missing** — not a resume claim, but the obvious follow-up to
+4. **The workers are not continuously hosted** — not a resume claim, but the obvious follow-up to
    "OAuth 2.0". Have the answer ready.

@@ -13,6 +13,7 @@ These are audited **against the resume**, not just against the code.
 |---|---|
 | **[14-ONE-DAY-REVISION.md](14-ONE-DAY-REVISION.md)** | **The night-before sheet. Start and end here.** |
 | **[CODE-VS-RESUME-CHECK.md](CODE-VS-RESUME-CHECK.md)** | **What you can safely claim, and what you can't.** Read this second. |
+| **[15-RUNTIME-AND-DEPLOYMENT.md](15-RUNTIME-AND-DEPLOYMENT.md)** | **What is actually deployed, what is manual, what isn't deployed at all.** Read this third — it is the question you are most likely to get wrong. |
 | [DANGEROUS-RESUME-CLAIMS.md](DANGEROUS-RESUME-CLAIMS.md) | The words on your resume that invite deep questioning |
 | [RESUME-DEFENSE-MAP.md](RESUME-DEFENSE-MAP.md) | Every resume bullet → code → questions → answers |
 | [PLACEMENT-TRACKER-DEEP-DIVE.md](PLACEMENT-TRACKER-DEEP-DIVE.md) | The full defence of your #1 project |
@@ -24,15 +25,31 @@ These are audited **against the resume**, not just against the code.
 | [SKILLS-DEFENSE.md](SKILLS-DEFENSE.md) | Minimum depth per technology on your resume |
 | [CS-FUNDAMENTALS-MAP.md](CS-FUNDAMENTALS-MAP.md) | Where the interviewer can take the conversation |
 
+### ⚠️ Answers that CHANGED — unlearn the old ones
+
+These were true when this doc set was written and are **no longer true**. Giving the old
+answer is as damaging as claiming a feature you never built.
+
+| Old answer | Current truth |
+|---|---|
+| "The OAuth `state` parameter is missing — my top fix" | `state` **and** PKCE S256 are implemented, with a 10-minute TTL and single-use consumption before the token exchange → [ch. 11](11-SECURITY-DEPLOYMENT-AND-OPERATIONS.md) |
+| "PKCE isn't my case — I have a backend" | PKCE **is** used, as defence in depth on the authorization code |
+| "There's no sweeper for `pending` emails" | Two reconcilers run in the API process — emails (60 s / 5 min) and attachments (60 s / 15 min / 100 rows) |
+| "Nothing consumes `attachment-processing`" | A **manual** GitHub Actions drain does. What's missing is a *continuous* consumer |
+| "Document intelligence is built but not wired" | It is wired, and `GET /user/shortlists` consumes `participantInformation`. Still true: `eventInformation` is read by nothing, and it has never run in production |
+| "Full sync is unpaginated" | Both full and incremental sync paginate on `nextPageToken` |
+| "125 declarations across 11 suites" | Backend **52 suites / 1038 tests**; client **18 files / 331 tests** |
+
 ### 🔴 Three things to do tonight
 1. **Rotate the Judge0 RapidAPI key** — it's hardcoded in `CodeSync/src/components/CodeEditor.tsx`
    and shipped to every browser.
 2. **Consider rewording the CodeSync "real-time code editing" bullet** — it isn't implemented.
 3. **Drop "SQLite" from the skills list** unless it's from work outside these two repos.
 
-### The five things you must never falsely claim
-Exactly-once processing · collaborative real-time editing in CodeSync · 50 committed test emails ·
-that you deleted the similarity formula · that concurrent updates are safe.
+### The six things you must never falsely claim
+Exactly-once processing · **that the background workers run continuously** · collaborative
+real-time editing in CodeSync · 50 committed test emails · that you deleted the similarity
+formula · that concurrent updates are safe.
 
 ---
 
@@ -44,7 +61,8 @@ that you deleted the similarity formula · that concurrent updates are safe.
 |---|---|
 | ✅ **Current** | The code does this today. Safe to claim in an interview. |
 | 🕘 **Historical** | It worked this way earlier. The code has since changed. |
-| 🚧 **Partial** | Built and tested, but not wired into the running pipeline. |
+| 🚧 **Partial** | Built and wired, but something downstream doesn't consume it yet. |
+| ⏸ **Manual** | Implemented and running — but only when I trigger it by hand. |
 | 💭 **Future idea** | Only discussed. **Never claim you built this.** |
 | ❓ **Uncertain** | Code doesn't prove it either way. Don't assert it. |
 
@@ -99,20 +117,27 @@ information is trustworthy enough to overwrite what it already believes.
 >
 > Updates are field-level and written in a transaction with an audit row, so an event can
 > always explain how it got its current values. Attachments are downloaded and parsed on a
-> second queue after the email succeeds. It's deployed on Vercel plus Render with Neon and
-> Redis, and it's multi-user — every query is scoped by owner, enforced with composite
-> foreign keys in Postgres."
+> second queue after the email succeeds. It's multi-user — every query is scoped by owner,
+> enforced with composite foreign keys in Postgres.
+>
+> On deployment I should be precise, because it's the thing people ask about: the frontend is
+> on Vercel, the API on Render with Neon and Redis, and the API runs continuously — it polls
+> Gmail every two minutes and runs two reconcilers. The two queue **workers** don't have a
+> permanent host. I drain each queue by dispatching a GitHub Actions workflow manually. So the
+> async architecture is real and running on the producer side; continuous worker hosting is
+> the piece I haven't paid for yet, and it's one environment variable to switch back."
 
 ---
 
 ## Architecture to remember
 
 ```
-Gmail ──OAuth──► Gmail Sync (scheduler, every 2 min)
-                      │  saves Email + attachment metadata
-                      ▼
-              email-processing queue (BullMQ / Redis)
+Gmail ──OAuth──► Gmail Sync (scheduler, every 2 min)     ┐
+                      │  saves Email + attachment metadata │  ALWAYS ON
+                      ▼                                    │  (Render API process)
+              email-processing queue (BullMQ / Redis)      ┘
                       │
+                      │   ⏸ consumed only when a drain is dispatched by hand
                       ▼
               email worker  ──► derive owner from the DB row
                       │
@@ -225,7 +250,14 @@ an event on a date that appeared nowhere in the message anyone actually sent), a
 25. How would you test extraction / duplicate emails / confidence updates? → [ch. 10](10-TESTING.md)
 26. Where does multi-tenancy get enforced, and how do you know it can't be bypassed? → [ch. 11](11-SECURITY-DEPLOYMENT-AND-OPERATIONS.md)
 
-Model answers for all of these (plus follow-ups) are in [ch. 12](12-INTERVIEW-QA.md).
+**Runtime & deployment** — the questions this doc set used to answer badly
+27. What is actually deployed today? → [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md)
+28. Why isn't the worker continuously running, and what does that cost? → [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md)
+29. How would you deploy and monitor the worker in production? → [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md)
+30. Is the async architecture real, or is it decoration? → [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md)
+
+Model answers for all of these (plus follow-ups) are in [ch. 12](12-INTERVIEW-QA.md) and,
+for 27–30, in [ch. 15](15-RUNTIME-AND-DEPLOYMENT.md).
 
 ---
 
@@ -240,16 +272,20 @@ Model answers for all of these (plus follow-ups) are in [ch. 12](12-INTERVIEW-QA
 5. `09-PROBLEMS-AND-DESIGN-DECISIONS.md` — pick 5 stories, learn those cold
 6. `02-DOMAIN-AND-DATA-MODEL.md` + `07-DATABASE-DESIGN.md`
 7. `08-RELIABILITY-IDEMPOTENCY-AND-TRANSACTIONS.md`
-8. `12-INTERVIEW-QA.md` — read out loud
+8. `15-RUNTIME-AND-DEPLOYMENT.md` — short, and the one you're most likely to be caught on
+9. `12-INTERVIEW-QA.md` — read out loud
 
-**If you have 1 hour:** `14-ONE-DAY-REVISION.md` → ch. 05 → 5 stories from ch. 09 → the
-diagrams in ch. 13.
+**If you have 1 hour:** `14-ONE-DAY-REVISION.md` → ch. 05 → 5 stories from ch. 09 → ch. 15
+§1 and §5–7 → the diagrams in ch. 13.
 
 **If you have 15 minutes:** the last section of `14-ONE-DAY-REVISION.md`. Nothing else.
 
 **Safe to skip when short on time:**
-- `06` sections on document-intelligence (it's built but not wired — you only need to know
-  *that*, not the internals)
+- `06` sections on document-intelligence internals — you need to know the *status*
+  (it runs, gated on `USE_AI`; `participantInformation` is consumed by `GET /user/shortlists`;
+  `eventInformation` is read by nothing; it has never executed in production), not the
+  classifier's prompt
 - `10-TESTING.md` beyond the "tests I should mention" list
 - `11` deployment detail beyond the one-line "why the OAuth callback must terminate on the
-  frontend origin"
+  frontend origin". **Do not skip ch. 15 §1 and §5** — "what's deployed" is asked in almost
+  every interview"

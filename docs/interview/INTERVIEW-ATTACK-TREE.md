@@ -106,7 +106,8 @@ Format per node: **Q** → *ideal concise answer* → **↳** likely follow-up �
 
 **↳ "What if Redis dies?"**
 > Three different consequences. Enqueue throws, so the email stays `pending` with no job —
-> and that's a real gap, there's no sweeper to pick those back up. Workers can't fetch, but
+> and that's the dual-write problem. A reconciler in the API process sweeps `pending` rows
+> older than five minutes and re-enqueues them through the normal producer. Workers can't fetch, but
 > jobs already in Redis survive. And sessions are on a separate client — the API refuses to
 > start at all if the session store is unreachable, because a process that starts without one
 > answers every sign-in with an opaque 500.
@@ -143,8 +144,10 @@ Format per node: **Q** → *ideal concise answer* → **↳** likely follow-up �
 
 **Q: Which OAuth flow, and why?**
 > Authorization code. The exchange happens server-to-server with the client secret, so no token
-> ever touches the browser. Implicit is deprecated and exposes tokens in the URL; PKCE is for
-> public clients that can't hold a secret, which isn't my case — I have a backend.
+> ever touches the browser. Implicit is deprecated and exposes tokens in the URL. PKCE is for
+> public clients that can't hold a secret, which isn't my case — but I use it anyway, as
+> defence in depth on the code itself: an intercepted code is useless without the verifier
+> that never left my server.
 `src/modules/gmail/gmail.service.ts`
 
 **↳ "Why offline access?"**
@@ -157,11 +160,17 @@ Format per node: **Q** → *ideal concise answer* → **↳** likely follow-up �
 > session is an identity record, not a credential store.
 
 **↳ "Is your OAuth callback CSRF-protected?"**
-> **No — the `state` parameter is missing.** That was tolerable while the callback issued
-> nothing, but it now creates a session, so it's a live gap and it's my top fix. The mitigation
-> is a signed single-use `state` stored server-side and verified on return.
-> *(Say this. It's documented in the code's own comments — bluffing here is worse than owning
-> it.)*
+> **Yes.** A 32-byte random `state` is stored on the anonymous session and compared on the
+> callback, with a 10-minute TTL independent of the session's own, and it's **consumed and
+> persisted before the token exchange** so a replay arriving mid-exchange doesn't find it
+> live. Every failure — missing, mismatched, expired, replayed — returns the same
+> indistinguishable answer, because naming which one failed tells an attacker which half of
+> their guess was right. PKCE with S256 sits on top of that.
+>
+> The attack it closes is specific: without `state`, the callback would establish a session
+> from any valid authorization code — including one an attacker obtained for their *own*
+> Google identity and then induced a victim to visit, handing the victim's browser a session
+> for the attacker's tenant.
 
 **Q: What does "incremental" mean concretely?**
 > Each mailbox stores a `historyId` cursor from Gmail. On the next run I call `history.list`
@@ -436,7 +445,7 @@ Format per node: **Q** → *ideal concise answer* → **↳** likely follow-up �
 # Branch 8 — Testing
 
 **Q: You say 120 automated tests. What are they?**
-> 125 explicit test declarations across 11 suites, about 214 at runtime because several are
+> 1038 backend tests across 52 Jest suites, plus 331 client tests across 18 Vitest files —
 > parametrized. Almost all unit tests with dependencies mocked — no database, no Redis, no API
 > key needed — plus one integration test with supertest against the real Express app.
 

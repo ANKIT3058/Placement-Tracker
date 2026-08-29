@@ -855,16 +855,30 @@ to operate it.
 ```
   ALWAYS ON                                RUN ON DEMAND
   ─────────────────────────────            ─────────────────────────────
-  RENDER — web service                     GITHUB ACTIONS — batch drain
-  node dist/src/server.js                  node dist/src/workers/email.worker.js
-                                           WORKER_EXIT_WHEN_DRAINED=true
-  ├─ Express (HTTP API)
-  ├─ Gmail scheduler        (timer)        ├─ consumes: email-processing
-  └─ Email reconciler       (timer)        └─ exits when the queue is empty
+  RENDER — web service                     GITHUB ACTIONS — two batch drains
+  node dist/src/server.js                  WORKER_EXIT_WHEN_DRAINED=true
 
-  Starts NO BullMQ worker.                 Started by a human. Not scheduled.
-  Produces queue jobs; consumes none.      Not triggered by a push or a deploy.
+  ├─ Express (HTTP API)                    production-worker.yml
+  ├─ Gmail scheduler        (timer)          → dist/src/workers/email.worker.js
+  ├─ Email reconciler       (timer)          → consumes: email-processing
+  └─ Attachment reconciler  (timer)          → USE_AI=true
+
+  Starts NO BullMQ worker.                 production-attachment-worker.yml
+  Produces queue jobs; consumes none.        → dist/src/modules/attachment/
+                                                 attachment.worker.js
+                                             → consumes: attachment-processing
+                                             → no USE_AI (Document Intelligence
+                                               writes nothing in production)
+
+                                           Both started by a human. Not scheduled.
+                                           Not triggered by a push or a deploy.
 ```
+
+> [!NOTE]
+> `deploy/systemd/` and [`oracle-worker-deployment.md`](./oracle-worker-deployment.md)
+> describe a continuously running worker on an Oracle VM. Those unit files are **written and
+> committed but not installed on any host**. Until they are, the picture above is the whole
+> production runtime.
 
 **The distinction that matters operationally:** *"the application server is
 running"* and *"background work is being processed"* are separate facts here, and
@@ -884,30 +898,44 @@ listen callback it starts exactly two timers:
 |---|---|---|
 | `startGmailScheduler()` | `GMAIL_SYNC_INTERVAL_MS` (120 s) | Syncs every eligible mailbox, sequentially. Persists Emails and enqueues `email-processing` jobs |
 | `startEmailReconciliationScheduler()` | `EMAIL_RECONCILE_INTERVAL_MS` (60 s) | Re-enqueues Emails that were persisted but never queued — see [§11.6](#116-the-email-reconciler) |
+| `startAttachmentReconciliationScheduler()` | `ATTACHMENT_RECONCILE_INTERVAL_MS` (60 s) | Re-enqueues attachment work Postgres still owes and Redis no longer represents. Bounded to `ATTACHMENT_RECONCILE_BATCH_SIZE` (100) rows per sweep |
 
-Both run **inside the web process**. Both are producers.
+All three run **inside the web process**, each on its own timer with its own
+re-entrancy guard. All three are producers.
 
-**Not started, anywhere in production:**
+**No BullMQ worker is started, anywhere, by a continuously running process.**
 
-- **No email worker.** `worker:email` is `tsx watch` — a development file-watcher.
-- **No attachment worker.** Same: `worker:attachment` is `tsx watch`, and no
-  Render service or workflow runs it. Attachment jobs **are** enqueued —
-  `processEmailJob` ends with `enqueueAttachmentJobs` — and then wait with no
-  consumer. Nothing downloads or parses an attachment in production today, which
-  is also why Document Intelligence cannot execute there.
+- `worker:email` and `worker:attachment` are `tsx watch` — development
+  file-watchers that never exit. Neither is a production runtime.
+- Both queues are consumed only by the manually dispatched drains in
+  [§11.3](#113-the-github-actions-drains), which run the **compiled** entrypoints.
 
 > [!WARNING]
-> `attachment-processing` accumulates jobs that nothing drains. This is a known
-> consequence of the current runtime, not a leak to fix urgently — the jobs are
-> durable and their ids are deterministic, so a future attachment runtime picks
-> them up rather than losing them.
+> Between drains, both queues accumulate. This is the expected steady state, not
+> a leak: the jobs are durable and their ids are deterministic, so the next drain
+> picks them up rather than losing them. What it costs is **latency** — an email
+> becomes an Event when a drain is dispatched, not when it is synced.
 
-## 11.3 The GitHub Actions drain
+> [!IMPORTANT]
+> The attachment drain ships **no `USE_AI`**, so `runDocumentIntelligence` returns
+> at its first line and no `DocumentIntelligence` row has ever been written in
+> production. The email drain **does** set `USE_AI=true`. The two workflows
+> deliberately differ on this.
 
-`.github/workflows/production-worker.yml`. Formerly the entire production
-background runtime; now a maintenance path, for draining a backlog when the
-Oracle VM is down or being rebuilt. The workflow itself is unchanged, and
-everything below still describes it accurately.
+## 11.3 The GitHub Actions drains
+
+Two workflows, `.github/workflows/production-worker.yml` (email) and
+`.github/workflows/production-attachment-worker.yml` (attachments). **They are
+the entire production background runtime today.** Separate files on purpose: the
+queues are independent, they are dispatched for different reasons, and either
+must be runnable without touching the other's definition — which is also why each
+has its own `concurrency` group.
+
+The diagram below describes the email drain; the attachment drain has the same
+shape and differs in three documented ways — it carries `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET` (it downloads from Gmail), it ships no `USE_AI`, and it
+ships no `ATTACHMENT_STORAGE_DIR`, so downloaded bytes land on the runner and
+vanish with it.
 
 ```
   workflow_dispatch  (manual — no schedule, no push, no pull_request trigger)
@@ -921,11 +949,12 @@ everything below still describes it accurately.
         │                                                (prisma generate && tsc
         │                                                 && fix-esm-imports)
         ▼
-  verify DATABASE_URL and REDIS_URL are present   ← fails fast and legibly
-        │
+  verify DATABASE_URL, REDIS_URL, OPENAI_API_KEY present   ← fails fast, legibly,
+        │                                                       and by NAME only
         ▼
   node dist/src/workers/email.worker.js
-        env: DATABASE_URL, REDIS_URL, WORKER_EXIT_WHEN_DRAINED=true
+        env: DATABASE_URL, REDIS_URL, OPENAI_API_KEY,
+             WORKER_EXIT_WHEN_DRAINED=true, USE_AI=true
         │
         ▼
   process jobs at concurrency 1  →  queue empty  →  graceful shutdown  →  exit 0
@@ -940,7 +969,7 @@ everything below still describes it accurately.
 | Permissions | `contents: read` |
 | Timeout | 30 minutes — a ceiling for the cases where the worker *cannot* exit (wedged Redis, paused queue), not the expected duration |
 | Queue consumed | `email-processing` **only** |
-| `USE_AI` / `OPENAI_API_KEY` | **Deliberately absent.** Production extraction is regex-only — deterministic, free, and one fewer external dependency in the run there is least evidence about |
+| `USE_AI` / `OPENAI_API_KEY` | **Present on the email drain** (`USE_AI: 'true'`), and the workflow's credential check requires the key — a missing key would not fail a job, it would silently degrade every one of them to regex-only. **Absent on the attachment drain**, which is what keeps Document Intelligence inert in production |
 
 **It is a run-to-drain execution model, not a continuously running worker.**
 `WORKER_EXIT_WHEN_DRAINED=true` is the whole difference: the same compiled

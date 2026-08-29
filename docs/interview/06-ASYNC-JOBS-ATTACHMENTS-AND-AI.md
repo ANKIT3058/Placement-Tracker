@@ -269,7 +269,8 @@ Three states, and the whole point of this section is not to blur them.
 | Attachment invocation | **IMPLEMENTED** (G-6.3) | `DocumentProcessingService` calls it after the parsed content is durable |
 | `USE_AI` gate | **IMPLEMENTED** | Read per call; anything other than `"true"` means no provider call and no row |
 | Fail-soft boundary | **IMPLEMENTED** | One `try/catch`, at the call site |
-| **Production execution** | **NOT ACTIVE** | Nothing in production runs the attachment worker, and the one production runtime sets no `USE_AI` — see *Production status* |
+| **Production execution** | **NOT ACTIVE** | The attachment worker *is* run in production as a manual drain, but that workflow ships no `USE_AI` — so no `DocumentIntelligence` row has ever been written there. See *Production status* |
+| Participant consumption | **IMPLEMENTED** (G-8.4) | `GET /user/shortlists` reads `participantInformation` to answer *"am I on this shortlist?"* — the first and only consumer of anything this layer stores |
 | **Event adjudication** | **PLANNED — remaining G-6** | `eventInformation` is stored and read by nothing. **No document has ever created or updated an Event** |
 | **O-1 … O-6** | **OPEN** | Architectural decisions the planned work depends on; none resolved |
 
@@ -306,7 +307,10 @@ DocumentIntelligenceService.analyze(parsed)          ← G-6.2 orchestrator
 saveDocumentIntelligence(owner, attachmentId, insights, extractedAt)   ← G-6.1
       │
       ▼
-DocumentIntelligence row     ──✗──►  nothing reads it
+DocumentIntelligence row
+      │
+      ├─ participantInformation ──►  GET /user/shortlists   ("am I on this list?")
+      └─ eventInformation       ──✗──►  nothing reads it
 ```
 
 - `DOCUMENT_TYPE`: `job_description`, `interview_schedule`, `general_instructions`,
@@ -353,7 +357,8 @@ The architecturally interesting fields:
 | `attachmentId` + `userId` | Composite FK to `Attachment(id, userId)`, so the row cannot disagree with its attachment's owner |
 | `classification` | The `DocumentType`, stored as its string value — not a database enum, so the vocabulary can evolve in `document-type.ts` without a lockstep migration |
 | `classificationConfidence` | **Named for what it is.** How sure the classifier was *about the document's type* — see the warning below |
-| `eventInformation` | JSON. The slice the planned G-6 work will consume. Written today, read by nothing |
+| `eventInformation` | JSON. The slice the planned G-6 work will consume. Written today, **read by nothing** |
+| `participantInformation` (consumption) | JSON. **Read by `GET /user/shortlists`** via `shortlist.repository` — tenant-scoped, selecting only `attachmentId` and this column. `summary` is deliberately excluded: it synopsises a document listing other students |
 | `participantInformation` | JSON. Deliberately an open bag of document-supplied labels; normalising it is a later entity-resolution layer's job |
 | `extractedAt` | Moves forward on every successful write, which is what distinguishes it from `createdAt` — a replay is not a new understanding |
 
@@ -425,28 +430,33 @@ context.
 
 ## Production status
 
-**Implemented but not production-active.** Both halves of that sentence are load-bearing:
-the code is shipped and tested, and it cannot execute in production today. It is not broken
-— it has no runtime.
+**The pipeline runs. The understanding step does not.** Be precise about which half you are
+claiming — the two halves have different answers.
 
-Two independent reasons, either of which alone is sufficient:
+**1. `attachment-processing` DOES have a consumer — a manual one.**
+`.github/workflows/production-attachment-worker.yml` runs the compiled entrypoint
+(`node dist/src/modules/attachment/attachment.worker.js`) with
+`WORKER_EXIT_WHEN_DRAINED=true`, behind `workflow_dispatch` and a required reviewer. So
+attachments **are** downloaded, stored and parsed in production — whenever I dispatch that
+drain. What does not exist is a *continuously running* consumer: the API service
+(`node dist/src/server.js`) starts Express, the Gmail scheduler and both reconcilers, and no
+BullMQ worker. Jobs accumulate between drains. Full runtime picture:
+[ch. 15](15-RUNTIME-AND-DEPLOYMENT.md).
 
-**1. Nothing consumes the `attachment-processing` queue in production.** The API service
-(`node dist/src/server.js`) starts Express, the Gmail scheduler and the email reconciler —
-no BullMQ worker. The only production worker runtime is a manually dispatched GitHub Actions
-job that runs `node dist/src/workers/email.worker.js`. `worker:attachment` exists only as a
-`tsx watch` development script. So attachment jobs **are enqueued** — `processEmailJob` ends
-with `enqueueAttachmentJobs` — and then wait, with no consumer. Nothing downloads, nothing
-parses, and `DocumentProcessingService.process` is never called.
+**2. That workflow deliberately ships no `USE_AI` and no `OPENAI_API_KEY`.** So
+`runDocumentIntelligence` returns at its first line, makes no provider call, and writes no
+`DocumentIntelligence` row. **Document Intelligence has never executed in production.** The
+omission is a decision about cost and data egress, not an oversight — enabling it is a
+separate, deliberate change, not something a runtime change should turn on as a side effect.
 
-**2. The one production runtime sets no `USE_AI`.** The workflow omits `USE_AI` and
-`OPENAI_API_KEY` on purpose — *"With `USE_AI` unset the extractor is regex-only:
-deterministic, free, and one fewer external dependency in the run we have the least evidence
-about."* So even reached, the gate would return before any provider call.
+> Note the asymmetry with the **email** drain, which *does* set `USE_AI=true` and does carry
+> an `OPENAI_API_KEY`. `USE_AI` is read at two independent call sites — `extraction.service`
+> for email extraction, and `document-processing.service` for document understanding — and
+> the two production workflows deliberately differ on it.
 
 **Say it as a distinction, because it is the interesting part:** *implemented* is a property
-of the repository; *production-executing* is a property of the deployment. This feature is
-the first and only place in the system where the two currently differ, and knowing which
+of the repository; *executing in production* is a property of the deployment. Document
+Intelligence is the one place in this system where the two still differ, and knowing which
 claim you are making is the difference between an honest status and an overclaim.
 
 ## Planned G-6 — the one step that remains

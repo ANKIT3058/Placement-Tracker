@@ -182,7 +182,12 @@ Answers written the way you'd actually speak them. Read them out loud once.
 > One place in the live pipeline: extracting company, stage, date, time and venue from an
 > email body. It's `gpt-4o-mini` at temperature 0, and it's **off by default** — `USE_AI=false`.
 > There's also a document-intelligence layer that classifies attachments and extracts from
-> them, but I should be clear: that's built and tested and **not wired into the pipeline yet**.
+> them. It **is** wired into the attachment pipeline — it runs after the parsed text is
+> durable, gated on `USE_AI` — and one slice of its output is consumed: `GET /user/shortlists`
+> reads `participantInformation` to answer "am I on this shortlist?". Two honest limits: the
+> `eventInformation` slice is stored and read by nothing, so no document has ever created or
+> updated an Event; and the production attachment drain ships no `USE_AI`, so it has never
+> executed in production.
 
 **Q: Why hybrid regex plus LLM instead of just the LLM?**
 > The failure modes are different in a way that matters. A regex that doesn't match gives you
@@ -442,13 +447,18 @@ Answers written the way you'd actually speak them. Read them out loud once.
 > them apart.
 
 **Q: What are the security gaps you know about?**
-> The big one is the OAuth `state` parameter — it's missing. That was tolerable while the
-> callback issued nothing, but now that it issues a session it's a live CSRF hole and it's my
-> top fix. Refresh tokens are stored in plaintext and should be encrypted at rest — right now
-> database access equals mailbox access. And there's no rate limiting anywhere.
+> The biggest one is that refresh tokens are stored in plaintext on `GmailAccount` — database
+> access currently equals mailbox access, and they should be encrypted at rest with a key from
+> a secret manager. There's no rate limiting anywhere. And `POST /email`, the manual paste
+> route, still exists in production; it's authenticated and CSRF-checked, but it should be
+> restricted to non-production.
 >
-> One I already fixed: I was logging the whole OAuth token object during debugging, which put
-> long-lived refresh tokens into stdout. Removed, and logs are metadata only now.
+> Two I already fixed, and both are worth mentioning because of *how* they were wrong. The
+> OAuth callback had no `state` parameter, which made it a login-CSRF hole once it started
+> issuing sessions — it now carries `state` plus PKCE with S256, a 10-minute TTL, and the
+> state is consumed before the token exchange so a replay can't find it live. And I was
+> logging the whole OAuth token object during debugging, which put long-lived refresh tokens
+> into stdout. Every log line in the Gmail paths now goes through an allowlist formatter.
 
 ---
 
@@ -463,6 +473,16 @@ Answers written the way you'd actually speak them. Read them out loud once.
 > Then the boxes: an ingestion adapter, a durable store, a queue, a worker that runs
 > interpret → recognise → adjudicate, and exactly one write point. That last constraint is
 > what makes it reviewable.
+
+**Q: What is actually deployed, and is the queue really running?**
+> The frontend on Vercel, the API on Render, Postgres on Neon, Redis for queues and sessions.
+> The API runs continuously and it runs three timers — a Gmail poller every two minutes and
+> two reconcilers every minute — all of which are producers. Neither BullMQ worker has a
+> permanent host: I drain each queue by dispatching a GitHub Actions workflow manually, behind
+> a required reviewer. So the async architecture is real and half of it is continuously
+> running; the consumer is the part without a host. It's a cost decision — Render has no free
+> tier for background workers — and it's reversible without a code change, because batch mode
+> is one environment variable on the same compiled entrypoint. Details in ch. 15.
 
 **Q: How would you handle an email describing three events?**
 > Today it doesn't — one email produces at most one event, and both the regex and the prompt

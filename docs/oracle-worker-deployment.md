@@ -1,7 +1,17 @@
 # Oracle VM worker deployment
 
-How the two background workers run continuously on an Oracle Cloud VM under
-systemd, replacing the manually dispatched GitHub Actions drains.
+> [!IMPORTANT]
+> **STATUS: PLANNED, NOT APPLIED.** The unit files in `deploy/systemd/` and the
+> procedure below are written and committed, but they are **not installed on any
+> host**. No VM is running these workers today.
+>
+> The current production runtime for both queues is the pair of manually
+> dispatched GitHub Actions drains described in
+> [`deployment.md` §11.3](./deployment.md#113-the-github-actions-drains).
+> This document is the plan for replacing them; read it in the future tense.
+
+How the two background workers *would* run continuously on an Oracle Cloud VM
+under systemd, replacing the manually dispatched GitHub Actions drains.
 
 This is a companion to [`deployment.md`](./deployment.md), not a replacement.
 That guide still owns the web service, the frontend, Neon, Redis provisioning

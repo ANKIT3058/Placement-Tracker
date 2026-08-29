@@ -1,7 +1,8 @@
 # 07 — Database Design
 
-Source of truth: `backend/prisma/schema.prisma` (18 migrations in
-`backend/prisma/migrations/`). All ✅ **Current** unless tagged.
+Source of truth: `backend/prisma/schema.prisma` (**22 migrations** in
+`backend/prisma/migrations/`, applied by hand from a workstation — no workflow or service
+runs `prisma migrate deploy`). All ✅ **Current** unless tagged.
 
 ---
 
@@ -30,13 +31,44 @@ Source of truth: `backend/prisma/schema.prisma` (18 migrations in
 | `User` | A person, keyed on Google's `sub` | Profile refreshed on login |
 | `GmailAccount` | A connected mailbox + refresh token + sync cursor | `refreshToken`, `historyId` |
 | `Email` | One raw message + its processing lifecycle | status only |
-| `EmailExtraction` | What was read out of one email + confidence | **append-only** |
+| `EmailExtraction` | What was read out of one email + confidence | one row per email, **rewritten by a replay** (upsert, latest wins) |
 | `Event` | The real-world round — the **only** thing users care about | **the only truly mutable row** |
 | `EventUpdate` | One audit row per accepted field change | **append-only** |
 | `Attachment` | File metadata + download lifecycle + parse output | lifecycle columns |
+| `DocumentIntelligence` | What a parsed attachment **means** — classification, summary, and the event/participant facts it revealed | rewritten by a replay (upsert) |
+| `StudentProfile` | Optional campus information about a User — currently a registration number, and nothing else | the one field |
 
 Enum `MailProvider { GOOGLE }` — a discriminator so provider is *data*, not just the table's
-name. No dispatch keys off it.
+name. No dispatch keys off it. `@default(GOOGLE)` exists so the expand migration needed no
+backfill, and should be dropped if a second variant is ever added.
+
+### Why `DocumentIntelligence` is its own table and not more columns on `Attachment`
+
+Two separate reasons, and the first is the one worth leading with.
+
+**They answer different questions.** `Attachment.text` / `parsedData` / `parsedMetadata`
+record what a file *says*; this records what it *means*. Mixing them would put a model's
+interpretation in the same row as the bytes it interpreted.
+
+**`Attachment` is a hot row and Prisma selects every column by default.** It is read on every
+processing job and in per-email list queries. `participantInformation` for a large shortlist
+is sizeable, and it would be dragged into every one of those reads for no reason.
+
+### Why `StudentProfile` is its own table and not columns on `User`
+
+`User` is the **authentication identity**: it answers "who is signed in" and "who owns this
+record". The product vision states it "does not model the student beyond the account" — no
+course, branch, CGPA or placement-cell profile. Putting a campus attribute on `User` would
+make the auth record start carrying institutional data and invite the rest to follow.
+Keeping it separate makes that refusal **structural** rather than a convention.
+
+And it is deliberately **not an identity and not a tenant key**. `User.id` remains the sole
+ownership boundary. `registrationNumber` appears in no `eventKey`, no ownership predicate and
+no tenant-scoping composite — it is information *about* a user, never a way of *finding*
+their records. The shortlist lookup makes the distinction explicit: the tenant-scoped query
+decides **which documents you may see**, and the registration number then decides **which of
+those mention you**. A user with a wrong number sees fewer results, never someone else's
+documents.
 
 ---
 
@@ -89,6 +121,50 @@ removed the code that could violate it.
 `Email.gmailAccountId` stays nullable (manual `POST /email` has no mailbox), so its FK is
 `MATCH SIMPLE`: a NULL leaves the constraint unchecked for that row, which is exactly right.
 
+### `EmailExtraction @@unique([emailId, userId])` and `DocumentIntelligence @@unique([attachmentId, userId])`
+**Problem:** the worker is replayed whenever it dies holding its BullMQ lock, and the insert
+runs a second time.
+
+A deterministic BullMQ jobId prevents a duplicate *job*; it says nothing about side effects a
+job already committed, **because Redis cannot know what PostgreSQL did**. And an
+application-side guard does not close it either: a `findFirst` before `create` is two
+statements with a window between them, and it would appear to work only for as long as
+concurrency stays at 1 — which is a scheduling accident, not an invariant.
+
+So both writes are **upserts resolved on these constraints**, and the constraint holds
+regardless of worker count, host restarts, or stalled-job overlap.
+
+**Composite with `userId` rather than keyed on the parent alone**, and that is not decoration:
+the relations are themselves composite, and keyed on `emailId` alone one tenant's replay could
+address another tenant's row.
+
+**Latest wins, deliberately** — and the update branch therefore sends explicit `null`s rather
+than the input's `undefined`. Prisma reads `undefined` as "leave this column alone", which
+would let a replay that extracted *less* silently retain a stale value from the previous
+attempt, leaving the row describing **neither** run. With `USE_AI=true` extraction is
+nondeterministic, so a replay can legitimately produce a different answer; the row should
+describe the attempt that actually completed.
+
+### `StudentProfile.registrationNumber @unique`, nullable
+**Problem:** one number identifies one student — but only in one institution, and not every
+student has one.
+
+**Nullable**, because a profile may exist before the number is known and a user may never
+supply one at all (off-campus opportunities carry none). PostgreSQL treats NULLs as distinct
+in a unique index, so any number of profiles may hold NULL simultaneously; the constraint
+binds only real values.
+
+**Unique**, because this deployment serves a single college. State that limit out loud: it is
+a property of *this deployment*, not a law of the domain, and it would not survive a second
+institution. Widening it is a deliberate future change, not something to pre-build.
+
+**Stored exactly as typed**, minus surrounding whitespace. There is deliberately no format
+validation — a registration number is issued by an institution in whatever shape that
+institution uses, and a format rule here would encode one college's convention as a
+correctness property and refuse a student whose number is perfectly valid. An empty string
+collapses to NULL, because otherwise both `""` and NULL would mean "absent" and only one of
+them would be excluded from the unique index.
+
 ### `Email.gmailMessageId @unique`
 **Problem:** ingesting the same Gmail message twice.
 Still **globally** unique, not per-account. That's a documented compromise, not an oversight:
@@ -103,6 +179,21 @@ doesn't actually collide across users. Worth knowing if pressed.
 ### `GmailAccount.email @unique`
 One mailbox, one row. Combined with the read-then-write in `connectGmailAccount`, a reconnect
 refreshes the token but never transfers ownership.
+
+---
+
+### `GmailAccount.reauthRequiredAt` — nullable timestamp, not a boolean
+**Problem:** Google refuses a refresh token permanently (HTTP 400 `invalid_grant`), which its
+documentation says requires the user to authenticate and consent again. Presenting the same
+token cannot succeed.
+
+So the background scheduler must skip that mailbox until a reconnect clears it — while an
+explicit, user-triggered sync may still attempt it.
+
+**Nullable rather than a status enum:** existing rows need no backfill, and the timestamp
+records *when* authentication broke, which a boolean would lose. NULL means "eligible for
+automatic sync". The token itself is **left in place** — Google has already invalidated it, so
+deleting it protects nothing and only makes reconnect harder to reason about.
 
 ---
 
